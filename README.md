@@ -42,7 +42,7 @@ An open-source, local-first, **agent-native outliner** built for speed.
 - **Storage:** SQLite for the block tree, references, and properties, paired with an FTS5 full-text search index.
 - **Agent Layer:** Rust CLI (`pith`) + MCP server exposing search, read, daily journal append, and block-level edit/move/undo with edit attribution.
 - **Editor:** One live text field per active block; inactive blocks render as styled text with native cursor/focus navigation across blocks.
-- **Sync (planned):** Offline-first sync (starting simple, evolving to CRDT-based multi-device sync via Loro) with a self-hostable relay server.
+- **Sync (planned):** Offline-first multi-device sync with a self-hostable server. The sync model (CRDT relay vs. server rebase) is still open — see [ARCHITECTURE §6](docs/ARCHITECTURE.md#6-sync).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
@@ -83,4 +83,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 3. **Android Daily Driver** — Journals, pages, backlinks, search, quick capture.
 4. **Sync + macOS** — Multi-device sync server and native SwiftUI macOS app.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for detailed milestones.
+---
+
+## License
+
+[AGPL-3.0-only](LICENSE). You may use, modify and share pith, but any distributed or network-hosted version, modified or not, must publish its complete source under the same license.
