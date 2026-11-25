@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehav
 use crate::derive;
 use crate::error::{Error, Result};
 use crate::id::Id;
+use crate::journal::resolve_journal_date;
 use crate::ops::Op;
 use crate::parser;
 use crate::schema::configure_and_migrate;
@@ -14,6 +15,12 @@ use crate::types::{
     ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, FlatBlockRow, OpRecord, Origin, Page,
     PageWindow, PropRecord, SearchHit, TxMeta, TxnRecord,
 };
+
+pub(crate) struct VisibleBlock {
+    pub block: Block,
+    pub depth: u32,
+    pub has_children: bool,
+}
 
 pub struct Store {
     conn: Connection,
@@ -430,52 +437,29 @@ impl Store {
             return Err(Error::DeletedEntity(page_id));
         }
 
-        let live_blocks = self.list_live_blocks(page_id)?;
-        let mut by_parent: HashMap<Option<Id>, Vec<&Block>> = HashMap::new();
-        for block in &live_blocks {
-            by_parent.entry(block.parent_id).or_default().push(block);
-        }
-
-        let mut visible: Vec<(&Block, u32, bool)> = Vec::new();
-        let mut stack: Vec<(&Block, u32)> = Vec::new();
-        if let Some(roots) = by_parent.get(&None) {
-            for &root in roots.iter().rev() {
-                stack.push((root, 0));
-            }
-        }
-
-        while let Some((block, depth)) = stack.pop() {
-            let children = by_parent.get(&Some(block.id));
-            let has_children = children.is_some_and(|c| !c.is_empty());
-            visible.push((block, depth, has_children));
-            if !block.collapsed
-                && let Some(kids) = children
-            {
-                for &child in kids.iter().rev() {
-                    stack.push((child, depth + 1));
-                }
-            }
-        }
-
+        let visible = self.visible_blocks(page_id)?;
         let total_visible = visible.len() as u64;
         let start = (offset as usize).min(visible.len());
         let end = start.saturating_add(limit as usize).min(visible.len());
         let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
         let mut rows = Vec::with_capacity(end - start);
 
-        for &(block, depth, has_children) in &visible[start..end] {
+        for item in &visible[start..end] {
+            let block = &item.block;
             let rendered =
                 derive::render_content_with_cache(&self.conn, &mut title_cache, &block.content)?;
+            let spans = derive::render_spans(&self.conn, &mut title_cache, &block.content)?;
             rows.push(FlatBlockRow {
                 id: block.id,
                 page_id: block.page_id,
                 parent_id: block.parent_id,
                 order_key: block.order_key.clone(),
-                depth,
+                depth: item.depth,
                 raw_content: block.content.clone(),
                 rendered_content: rendered,
+                spans,
                 collapsed: block.collapsed,
-                has_children,
+                has_children: item.has_children,
                 version: block.version,
             });
         }
@@ -486,6 +470,47 @@ impl Store {
             offset: start as u64,
             rows,
         })
+    }
+
+    pub(crate) fn visible_blocks(&self, page_id: Id) -> Result<Vec<VisibleBlock>> {
+        let live_blocks = self.list_live_blocks(page_id)?;
+        let mut by_parent: HashMap<Option<Id>, Vec<&Block>> = HashMap::new();
+        for block in &live_blocks {
+            by_parent.entry(block.parent_id).or_default().push(block);
+        }
+
+        let mut visible = Vec::new();
+        let mut stack: Vec<(&Block, u32)> = Vec::new();
+        if let Some(roots) = by_parent.get(&None) {
+            for &root in roots.iter().rev() {
+                stack.push((root, 0));
+            }
+        }
+
+        while let Some((block, depth)) = stack.pop() {
+            let children = by_parent.get(&Some(block.id));
+            visible.push(VisibleBlock {
+                block: block.clone(),
+                depth,
+                has_children: children.is_some_and(|c| !c.is_empty()),
+            });
+            if !block.collapsed
+                && let Some(kids) = children
+            {
+                for &child in kids.iter().rev() {
+                    stack.push((child, depth + 1));
+                }
+            }
+        }
+        Ok(visible)
+    }
+
+    pub fn journal_page(&self, date: Option<&str>) -> Result<Option<Page>> {
+        let (journal_day, title) = resolve_journal_date(date)?;
+        match self.get_page_by_journal_day(journal_day)? {
+            Some(page) => Ok(Some(page)),
+            None => self.get_page_by_title(&title),
+        }
     }
 
     pub fn data_version(&self) -> Result<i64> {
@@ -553,10 +578,11 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some(target) = latest_undoable_edit(&tx, &meta.actor)? else {
+        let Some(newest) = latest_undoable_edit(&tx, &meta.actor)? else {
             return Ok(None);
         };
-        let result = undo_in_tx(&tx, target, meta, force)?;
+        let targets = undo_step_members(&tx, newest, &meta.actor)?;
+        let result = undo_step_in_tx(&tx, &targets, meta, force)?;
         tx.commit()?;
         Ok(Some(result))
     }
@@ -565,10 +591,11 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some(target) = latest_redoable_undo(&tx, &meta.actor)? else {
+        let Some(newest) = latest_redoable_undo(&tx, &meta.actor)? else {
             return Ok(None);
         };
-        let result = undo_in_tx(&tx, target, meta, force)?;
+        let targets = undo_step_members(&tx, newest, &meta.actor)?;
+        let result = undo_step_in_tx(&tx, &targets, meta, force)?;
         tx.commit()?;
         Ok(Some(result))
     }
@@ -713,11 +740,16 @@ fn apply_in_tx(
         });
     }
 
+    let applied_ops: Vec<Op> = applied_content
+        .iter()
+        .map(|item| item.forward.clone())
+        .collect();
+
     let txn_id = Id::new();
     let txn_id_rev = txn_id.reversed_hex();
     tx.execute(
-        "INSERT INTO txns (id, id_rev, ts, origin, actor, session, summary, undoes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO txns (id, id_rev, ts, origin, actor, session, summary, undoes, undo_group)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             txn_id.as_bytes().as_slice(),
             txn_id_rev,
@@ -727,6 +759,7 @@ fn apply_in_tx(
             meta.session,
             meta.summary,
             undoes.map(|id| id.as_bytes().to_vec()),
+            meta.undo_group,
         ],
     )?;
 
@@ -752,11 +785,6 @@ fn apply_in_tx(
             ],
         )?;
     }
-
-    let applied_ops = applied_content
-        .iter()
-        .map(|item| item.forward.clone())
-        .collect();
 
     let inverse_ops = applied_content
         .iter()
@@ -795,10 +823,54 @@ fn undo_in_tx(tx: &Transaction<'_>, txn_id: Id, meta: &TxMeta, force: bool) -> R
         } else {
             meta.summary.clone()
         },
+        undo_group: meta.undo_group.clone(),
     };
 
     apply_in_tx(tx, &inverse_ops, &undo_meta, Some(txn_id))
         .map_err(|err| as_undo_conflict(txn_id, err))
+}
+
+fn undo_step_members(conn: &Connection, newest: Id, actor: &str) -> Result<Vec<Id>> {
+    let group: Option<String> = conn
+        .prepare_cached("SELECT undo_group FROM txns WHERE id = ?1")?
+        .query_row(params![newest.as_bytes().as_slice()], |r| r.get(0))?;
+    let Some(group) = group else {
+        return Ok(vec![newest]);
+    };
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM txns WHERE actor = ?1 AND undo_group = ?2 ORDER BY seq DESC",
+    )?;
+    let mut members = Vec::new();
+    for id in collect_ids(stmt.query_map(params![actor, group], |r| r.get::<_, Vec<u8>>(0))?)? {
+        if !txn_is_undone(conn, id)? {
+            members.push(id);
+        }
+    }
+    Ok(members)
+}
+
+fn undo_step_in_tx(
+    tx: &Transaction<'_>,
+    targets: &[Id],
+    meta: &TxMeta,
+    force: bool,
+) -> Result<ApplyResult> {
+    let step_meta = TxMeta {
+        undo_group: Some(Id::new().to_string()),
+        ..meta.clone()
+    };
+    let mut combined = ApplyResult {
+        txn_id: None,
+        applied_ops: Vec::new(),
+        inverse_ops: Vec::new(),
+    };
+    for &target in targets {
+        let result = undo_in_tx(tx, target, &step_meta, force)?;
+        combined.txn_id = result.txn_id.or(combined.txn_id);
+        combined.applied_ops.extend(result.applied_ops);
+        combined.inverse_ops.extend(result.inverse_ops);
+    }
+    Ok(combined)
 }
 
 fn latest_undoable_edit(conn: &Connection, actor: &str) -> Result<Option<Id>> {

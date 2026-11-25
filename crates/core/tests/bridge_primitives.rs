@@ -253,3 +253,63 @@ fn undo_and_redo_only_walk_the_callers_own_history() -> Result<()> {
     assert_eq!(agent_blocks.len(), 1);
     Ok(())
 }
+
+fn type_in_group(store: &mut Store, block_id: Id, text: &str, group: &str) -> Result<Id> {
+    store
+        .apply_ops(
+            &[Op::UpdateBlock {
+                id: block_id,
+                content: text.to_string(),
+                expected_version: None,
+            }],
+            &user_meta("type").with_undo_group(group),
+        )?
+        .txn_id
+        .context("txn")
+}
+
+#[test]
+fn an_undo_group_is_one_undo_and_redo_step() -> Result<()> {
+    let (mut store, block) = seeded_block()?;
+    type_in_group(&mut store, block, "v0 t", "burst-1")?;
+    type_in_group(&mut store, block, "v0 typing", "burst-1")?;
+    type_in_group(&mut store, block, "v0 typing more", "burst-1")?;
+
+    store.undo_last(&user_meta("undo"), false)?;
+    assert_eq!(text_of(&store, block)?, "v0");
+
+    store.redo_last(&user_meta("redo"), false)?;
+    assert_eq!(text_of(&store, block)?, "v0 typing more");
+
+    store.undo_last(&user_meta("undo"), false)?;
+    assert_eq!(text_of(&store, block)?, "v0");
+    store.check_invariants()?;
+    Ok(())
+}
+
+#[test]
+fn undo_groups_keep_history_append_only_and_visible_in_the_feed() -> Result<()> {
+    let (mut store, block) = seeded_block()?;
+    let first = type_in_group(&mut store, block, "first", "burst-1")?;
+    let cursor = store.changes_since(0, 100)?.latest_seq;
+    let second = type_in_group(&mut store, block, "second", "burst-1")?;
+
+    assert_ne!(first, second);
+    let feed = store.changes_since(cursor, 100)?;
+    assert_eq!(feed.entries.len(), 1);
+    assert_eq!(feed.entries[0].txn_id, second);
+    Ok(())
+}
+
+#[test]
+fn separate_groups_undo_separately() -> Result<()> {
+    let (mut store, block) = seeded_block()?;
+    type_in_group(&mut store, block, "A", "burst-1")?;
+    type_in_group(&mut store, block, "B", "burst-2")?;
+
+    store.undo_last(&user_meta("undo"), false)?;
+    assert_eq!(text_of(&store, block)?, "A");
+    store.undo_last(&user_meta("undo"), false)?;
+    assert_eq!(text_of(&store, block)?, "v0");
+    Ok(())
+}

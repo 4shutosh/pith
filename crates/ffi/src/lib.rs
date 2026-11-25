@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use pith_core::api::resolve_journal_date;
+use pith_core::journal::resolve_journal_date;
+use pith_core::snippet::Segment;
 use pith_core::{
-    ApplyResult, Backlink, ChangeEntry, ChangeFeed, Error, FlatBlockRow, Id, Op, Origin, Page,
-    PageWindow, SearchHit, Store, TxMeta, order,
+    ApplyResult, Backlink, ChangeEntry, ChangeFeed, EditOutcome, Error, FlatBlockRow, Id, Op,
+    Origin, Page, PageWindow, RenderedSpan, SearchHit, Store, TxMeta, order,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -73,6 +74,7 @@ pub struct FfiTxMeta {
     pub actor: String,
     pub session: Option<String>,
     pub summary: String,
+    pub undo_group: Option<String>,
 }
 
 impl From<FfiTxMeta> for TxMeta {
@@ -80,6 +82,9 @@ impl From<FfiTxMeta> for TxMeta {
         let mut out = TxMeta::new(meta.writer.into(), meta.actor, meta.summary);
         if let Some(session) = meta.session {
             out = out.with_session(session);
+        }
+        if let Some(group) = meta.undo_group {
+            out = out.with_undo_group(group);
         }
         out
     }
@@ -117,6 +122,7 @@ pub struct FfiFlatBlockRow {
     pub depth: u32,
     pub raw_content: String,
     pub rendered_content: String,
+    pub spans: Vec<FfiSpan>,
     pub collapsed: bool,
     pub has_children: bool,
     pub version: i64,
@@ -132,6 +138,7 @@ impl From<FlatBlockRow> for FfiFlatBlockRow {
             depth: row.depth,
             raw_content: row.raw_content,
             rendered_content: row.rendered_content,
+            spans: row.spans.into_iter().map(Into::into).collect(),
             collapsed: row.collapsed,
             has_children: row.has_children,
             version: row.version,
@@ -314,34 +321,62 @@ pub enum FfiSearchHit {
     Page {
         page_id: String,
         title: String,
+        highlighted_title: Vec<FfiSegment>,
     },
     Block {
         block_id: String,
         page_id: String,
         page_title: String,
-        rendered_content: String,
+        breadcrumb: Vec<String>,
+        snippet: Vec<FfiSegment>,
+        cursor: u32,
         rank: f64,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiSegment {
+    pub text: String,
+    pub highlighted: bool,
+}
+
+impl From<Segment> for FfiSegment {
+    fn from(segment: Segment) -> Self {
+        Self {
+            text: segment.text,
+            highlighted: segment.highlighted,
+        }
+    }
 }
 
 impl From<SearchHit> for FfiSearchHit {
     fn from(hit: SearchHit) -> Self {
         match hit {
-            SearchHit::Page { page_id, title } => Self::Page {
+            SearchHit::Page {
+                page_id,
+                title,
+                highlighted_title,
+            } => Self::Page {
                 page_id: page_id.to_string(),
                 title,
+                highlighted_title: highlighted_title.into_iter().map(Into::into).collect(),
             },
             SearchHit::Block {
                 block_id,
                 page_id,
                 page_title,
-                rendered_content,
+                breadcrumb,
+                snippet,
+                cursor,
                 rank,
+                ..
             } => Self::Block {
                 block_id: block_id.to_string(),
                 page_id: page_id.to_string(),
                 page_title,
-                rendered_content,
+                breadcrumb,
+                snippet: snippet.into_iter().map(Into::into).collect(),
+                cursor,
                 rank,
             },
         }
@@ -355,6 +390,7 @@ pub struct FfiBacklink {
     pub page_title: String,
     pub kind: String,
     pub rendered_content: String,
+    pub spans: Vec<FfiSpan>,
 }
 
 impl From<Backlink> for FfiBacklink {
@@ -365,6 +401,71 @@ impl From<Backlink> for FfiBacklink {
             page_title: b.page_title,
             kind: b.kind,
             rendered_content: b.rendered_content,
+            spans: b.spans.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiSpan {
+    Text {
+        text: String,
+    },
+    Code {
+        text: String,
+    },
+    Task {
+        state: String,
+    },
+    PageLink {
+        page_id: Option<String>,
+        title: String,
+    },
+    Tag {
+        page_id: Option<String>,
+        title: String,
+    },
+    BlockRef {
+        block_id: String,
+        text: String,
+    },
+}
+
+impl From<RenderedSpan> for FfiSpan {
+    fn from(span: RenderedSpan) -> Self {
+        match span {
+            RenderedSpan::Text(text) => Self::Text { text },
+            RenderedSpan::Code(text) => Self::Code { text },
+            RenderedSpan::Task(state) => Self::Task { state },
+            RenderedSpan::PageLink { page_id, title } => Self::PageLink {
+                page_id: page_id.map(|id| id.to_string()),
+                title,
+            },
+            RenderedSpan::Tag { page_id, title } => Self::Tag {
+                page_id: page_id.map(|id| id.to_string()),
+                title,
+            },
+            RenderedSpan::BlockRef { block_id, text } => Self::BlockRef {
+                block_id: block_id.to_string(),
+                text,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiEditOutcome {
+    pub txn_id: Option<String>,
+    pub focus_block_id: String,
+    pub cursor: Option<u32>,
+}
+
+impl From<EditOutcome> for FfiEditOutcome {
+    fn from(outcome: EditOutcome) -> Self {
+        Self {
+            txn_id: outcome.result.txn_id.map(|id| id.to_string()),
+            focus_block_id: outcome.focus_block.to_string(),
+            cursor: outcome.cursor,
         }
     }
 }
@@ -463,32 +564,84 @@ impl PithGraph {
         Ok(store.get_page_by_title(&title)?.map(Into::into))
     }
 
-    pub fn get_or_create_journal(
+    pub fn journal_page(&self, date: Option<String>) -> Result<Option<FfiPage>, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.journal_page(date.as_deref())?.map(Into::into))
+    }
+
+    pub fn start_journal(
         &self,
         date: Option<String>,
-        actor: String,
-    ) -> Result<FfiPage, FfiError> {
-        let (journal_day, title) = resolve_journal_date(date.as_deref())?;
+        meta: FfiTxMeta,
+    ) -> Result<FfiEditOutcome, FfiError> {
         let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
-        if let Some(page) = store.get_page_by_journal_day(journal_day)? {
-            return Ok(page.into());
-        }
-        if let Some(page) = store.get_page_by_title(&title)? {
-            return Ok(page.into());
-        }
-        let id = Id::new();
-        let meta = TxMeta::new(Origin::User, actor, format!("create journal {title}"));
-        store.apply_ops(
-            &[Op::CreatePage {
-                id,
-                title,
-                journal_day: Some(journal_day),
-                document_mode: false,
-            }],
-            &meta,
-        )?;
-        let page = store.get_page(id)?.ok_or(Error::NotFound(id))?;
-        Ok(page.into())
+        Ok(store.start_journal(date.as_deref(), &meta.into())?.into())
+    }
+
+    pub fn append_block(
+        &self,
+        page_id: String,
+        text: String,
+        meta: FfiTxMeta,
+    ) -> Result<FfiEditOutcome, FfiError> {
+        let page_id = parse_id(&page_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.append_block(page_id, &text, &meta.into())?.into())
+    }
+
+    pub fn split_block(
+        &self,
+        block_id: String,
+        base_version: i64,
+        before: String,
+        after: String,
+        meta: FfiTxMeta,
+    ) -> Result<FfiEditOutcome, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .split_block(block_id, base_version, &before, &after, &meta.into())?
+            .into())
+    }
+
+    pub fn merge_into_previous(
+        &self,
+        block_id: String,
+        base_version: i64,
+        text: String,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiEditOutcome>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .merge_into_previous(block_id, base_version, &text, &meta.into())?
+            .map(Into::into))
+    }
+
+    pub fn indent_block(
+        &self,
+        block_id: String,
+        base_version: i64,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiEditOutcome>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .indent_block(block_id, base_version, &meta.into())?
+            .map(Into::into))
+    }
+
+    pub fn outdent_block(
+        &self,
+        block_id: String,
+        base_version: i64,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiEditOutcome>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .outdent_block(block_id, base_version, &meta.into())?
+            .map(Into::into))
     }
 
     pub fn read_page_window(
@@ -572,6 +725,11 @@ impl PithGraph {
         let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
         Ok(store.changes_since(after_seq, limit as usize)?.into())
     }
+}
+
+#[uniffi::export]
+pub fn journal_title(date: Option<String>) -> Result<String, FfiError> {
+    Ok(resolve_journal_date(date.as_deref())?.1)
 }
 
 #[uniffi::export]

@@ -4,8 +4,19 @@ use pith_core::parser::{
     RefKind, RefTarget, parse_content, remove_property_in_content, set_property_in_content,
     set_task_state_in_content,
 };
+use pith_core::snippet::Segment;
 use pith_core::{Id, Op, Origin, SearchHit, Store, TxMeta};
 use proptest::prelude::*;
+
+fn segs(parts: &[(&str, bool)]) -> Vec<Segment> {
+    parts
+        .iter()
+        .map(|(text, highlighted)| Segment {
+            text: text.to_string(),
+            highlighted: *highlighted,
+        })
+        .collect()
+}
 
 fn user_meta(summary: &str) -> TxMeta {
     TxMeta::new(Origin::User, "me", summary)
@@ -394,6 +405,7 @@ fn search_excludes_uuids_handles_short_queries_and_survives_vacuum() -> Result<(
             vec![SearchHit::Page {
                 page_id,
                 title: "Engineering".to_string(),
+                highlighted_title: segs(&[("En", true), ("gineering", false)]),
             }]
         );
         assert!(store.search("zz", 10)?.is_empty());
@@ -470,10 +482,12 @@ fn short_query_returns_pages_including_empty_ones_without_block_crowding() -> Re
             SearchHit::Page {
                 page_id: design,
                 title: "Design".to_string(),
+                highlighted_title: segs(&[("De", true), ("sign", false)]),
             },
             SearchHit::Page {
                 page_id: devlog,
                 title: "Devlog".to_string(),
+                highlighted_title: segs(&[("De", true), ("vlog", false)]),
             },
         ]
     );
@@ -535,6 +549,7 @@ fn title_matches_are_page_hits_at_every_query_length() -> Result<()> {
         vec![SearchHit::Page {
             page_id: design,
             title: "Design".to_string(),
+            highlighted_title: segs(&[("Des", true), ("ign", false)]),
         }]
     );
 
@@ -545,6 +560,7 @@ fn title_matches_are_page_hits_at_every_query_length() -> Result<()> {
         SearchHit::Page {
             page_id: devlog,
             title: "Devlog".to_string(),
+            highlighted_title: segs(&[("Devlog", true)]),
         }
     );
     assert!(matches!(

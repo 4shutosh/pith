@@ -21,7 +21,7 @@ For notes on prior art, see [research/logseq-db.md](research/logseq-db.md).
 | D10 | **Undo history is persistent, in SQLite, and filterable by actor.** If one entry can't be applied, it is skipped; history is only trimmed by GC (D7). | Undo survives restarts and is available to every surface. A whole agent session can be reverted. |
 | D11 | **Stable UUIDv7 IDs and fractional-index sibling ordering**, with a deterministic tie-break (uuid) to repair duplicate keys. | A move rewrites one row. Concurrent inserts and moves merge cleanly, which is what sync needs. |
 | D12 | **No daemon.** The core is a library. Each process opens SQLite in WAL mode with `BEGIN IMMEDIATE` + `busy_timeout`. Long-lived apps detect external writes via `PRAGMA data_version` and a txn cursor. | SQLite already serialises writers safely. Add a daemon only if change-notification latency demands it. |
-| D13 | **Search is FTS5 with the `trigram` tokenizer, in the same database, updated synchronously in the write txn, and rebuildable from content.** The tokenizer is fixed in the schema. Page titles and block text have separate indexes: `pages_fts` holds live page titles, `blocks_fts` holds each block's own text with `[[page]]`/`#tag` UUIDs rendered to titles; `((block refs))` are neither expanded nor indexed. A search returns page hits first, then block hits. Queries shorter than 3 characters return only page hits, by title prefix. | Trigram gives substring matches ("map" finds "Roadmap") and works for languages without word spaces. Separate title and text indexes make every page findable, including empty ones, and stop one page's blocks from crowding out results just because its title matches. Prefix lookup keeps short queries index-backed. Search is never stale. Not expanding block refs means editing a block re-indexes only that block. |
+| D13 | **Search is FTS5 with the `trigram` tokenizer, in the same database, updated synchronously in the write txn, and rebuildable from content.** The tokenizer is fixed in the schema. Page titles and block text have separate indexes: `pages_fts` holds live page titles, `blocks_fts` holds each block's own text with `[[page]]`/`#tag` UUIDs rendered to titles; `((block refs))` are neither expanded nor indexed. A search returns page hits first, then one hit per matching line of each matching block, in document order. A line hit carries its breadcrumb (page and ancestor blocks), the line split into highlighted and plain segments, and the cursor offset of the match (in Unicode scalars, the unit for every text offset the core exchanges). Queries shorter than 3 characters return only page hits, by title prefix. | Trigram gives substring matches ("map" finds "Roadmap") and works for languages without word spaces. Separate title and text indexes make every page findable, including empty ones, and stop one page's blocks from crowding out results just because its title matches. Prefix lookup keeps short queries index-backed. Search is never stale. Not expanding block refs means editing a block re-indexes only that block. |
 
 ---
 
@@ -55,7 +55,8 @@ pages_fts  USING fts5(title, tokenize='trigram')   -- rowid = pages.seq, live pa
 txns       (seq INTEGER PRIMARY KEY, id BLOB UNIQUE /* uuidv7 */, ts,
             origin TEXT /* user|agent|import|undo|sync */,
             actor TEXT /* 'me' | 'agent:claude' */, session TEXT NULL, summary TEXT,
-            undoes BLOB NULL /* txn this one reverts */)
+            undoes BLOB NULL /* txn this one reverts */,
+            undo_group TEXT NULL /* txns undone and redone as one step */)
   INDEX (undoes)
 ops        (txn_id BLOB, seq INTEGER, forward JSON, inverse JSON, PRIMARY KEY (txn_id, seq))
 txn_blocks (txn_id BLOB, block_id BLOB)   -- which blocks/pages each txn touched (page ids share the column)
@@ -110,7 +111,7 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
 **Undo** applies the `inverse` ops of txn T as a new txn with `origin=undo, undoes=T`. Its checks and its write run in one `BEGIN IMMEDIATE` transaction, so two processes can't both undo T. Only undo can create `origin=undo` txns; `apply_ops` rejects that origin from callers.
 
 - T can't be undone while it is undone. Undoing the undo txn is redo, after which T can be undone again. "Undone" is derived from the append-only `undoes` chain; history rows are never mutated.
-- Undo/redo stacks are per actor and derived from the log. "Undo last" reverts the actor's newest edit that isn't undone. "Redo last" re-applies the actor's newest undo made after their last edit; a new edit clears redo. Picking the target and applying it happen in one transaction.
+- Undo/redo stacks are per actor and derived from the log. Txns may carry an `undo_group`; all of an actor's txns in one group undo and redo as one step, while each stays its own append-only history row. "Undo last" reverts the actor's newest edit that isn't undone. "Redo last" re-applies the actor's newest undo made after their last edit; a new edit clears redo. Picking the target and applying it happen in one transaction.
 - Undo reports a conflict (`--force` overrides) instead of clobbering when:
   - a later txn by a *different* actor touched any block T touched, or
   - a restored page's title is now taken by another page.
@@ -120,7 +121,11 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
 - It flushes on structural actions (Enter, Tab, blur, navigation).
 - It never flushes during IME composition.
 
-Consecutive `update_block` txns on the same block by the same actor within a short window may be coalesced into one undo step.
+Saves during one editing session share an `undo_group`, so a typing burst is one undo step.
+
+**Editor commands live in the core.** Split, merge, indent, outdent and append compile to canonical ops using the full tree, never the rows a UI happens to have loaded. Edits carry the version the editor started from, so a change made elsewhere surfaces as a conflict instead of being overwritten. A journal page is created together with its first block, so opening the app writes nothing.
+
+**Display:** the core turns block content into typed spans (text, code, task, page link, tag, block ref); UIs style those spans and never re-parse content.
 
 ---
 
@@ -146,7 +151,7 @@ There is one typed API in `pith-core`. The CLI and MCP are thin wrappers generat
 
 | Tool | Notes |
 |---|---|
-| `search(q, limit)` | Ranked results with page path and block id |
+| `search(q, limit)` | Page hits, then one hit per matching line: breadcrumb, matched line, block id |
 | `get_page(name\|id, depth)` / `get_block(id, depth)` | Outline format above |
 | `backlinks(page\|block)` | Live blocks only |
 | `journal_append(markdown, date?)` | Most common agent write |

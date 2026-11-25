@@ -1,9 +1,9 @@
-use chrono::{Datelike, Local};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::id::Id;
+use crate::journal::resolve_journal_date;
 use crate::ops::Op;
 use crate::order;
 use crate::store::Store;
@@ -31,7 +31,8 @@ pub enum SearchResultItem {
         page_id: Id,
         page_short_id: String,
         page_title: String,
-        content: String,
+        breadcrumb: Vec<String>,
+        matched_line: String,
         rank: f64,
     },
 }
@@ -166,7 +167,7 @@ impl<'a> Api<'a> {
         let mut out = Vec::with_capacity(hits.len());
         for hit in hits {
             match hit {
-                SearchHit::Page { page_id, title } => out.push(SearchResultItem::Page {
+                SearchHit::Page { page_id, title, .. } => out.push(SearchResultItem::Page {
                     id: page_id,
                     short_id: self.store.short_id(page_id)?,
                     title,
@@ -175,15 +176,18 @@ impl<'a> Api<'a> {
                     block_id,
                     page_id,
                     page_title,
-                    rendered_content,
+                    breadcrumb,
+                    snippet,
                     rank,
+                    ..
                 } => out.push(SearchResultItem::Block {
                     id: block_id,
                     short_id: self.store.short_id(block_id)?,
                     page_id,
                     page_short_id: self.store.short_id(page_id)?,
                     page_title,
-                    content: rendered_content,
+                    breadcrumb,
+                    matched_line: crate::snippet::plain(&snippet),
                     rank,
                 }),
             }
@@ -247,8 +251,7 @@ impl<'a> Api<'a> {
         date: Option<&str>,
         depth: Option<usize>,
     ) -> Result<Option<OutlinePage>> {
-        let (journal_day, _) = resolve_journal_date(date)?;
-        let Some(page) = self.store.get_page_by_journal_day(journal_day)? else {
+        let Some(page) = self.store.journal_page(date)? else {
             return Ok(None);
         };
         Ok(Some(self.build_outline_page(&page, depth)?))
@@ -265,21 +268,18 @@ impl<'a> Api<'a> {
         let (journal_day, title) = resolve_journal_date(date)?;
 
         let mut ops = Vec::new();
-        let page_id = match self.store.get_page_by_journal_day(journal_day)? {
+        let page_id = match self.store.journal_page(date)? {
             Some(page) => page.id,
-            None => match self.store.get_page_by_title(&title)? {
-                Some(page) => page.id,
-                None => {
-                    let id = Id::new();
-                    ops.push(Op::CreatePage {
-                        id,
-                        title,
-                        journal_day: Some(journal_day),
-                        document_mode: false,
-                    });
-                    id
-                }
-            },
+            None => {
+                let id = Id::new();
+                ops.push(Op::CreatePage {
+                    id,
+                    title,
+                    journal_day: Some(journal_day),
+                    document_mode: false,
+                });
+                id
+            }
         };
 
         let last_key = self
@@ -803,56 +803,4 @@ fn strip_bullet(trimmed: &str) -> Option<&str> {
 
 fn is_hex_suffix(s: &str) -> bool {
     s.len() >= MIN_SHORT_ID_LEN && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-pub fn resolve_journal_date(date: Option<&str>) -> Result<(i32, String)> {
-    match date {
-        Some(raw) => parse_iso_date(raw),
-        None => Ok(today_local()),
-    }
-}
-
-pub fn parse_iso_date(raw: &str) -> Result<(i32, String)> {
-    let parts: Vec<&str> = raw.trim().split('-').collect();
-    if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
-        return Err(Error::InvalidDate(raw.to_string()));
-    }
-    let year: i32 = parts[0]
-        .parse()
-        .map_err(|_| Error::InvalidDate(raw.to_string()))?;
-    let month: u32 = parts[1]
-        .parse()
-        .map_err(|_| Error::InvalidDate(raw.to_string()))?;
-    let day: u32 = parts[2]
-        .parse()
-        .map_err(|_| Error::InvalidDate(raw.to_string()))?;
-    if !(1..=12).contains(&month) || !(1..=days_in_month(year, month)).contains(&day) {
-        return Err(Error::InvalidDate(raw.to_string()));
-    }
-    let journal_day = year * 10_000 + (month as i32) * 100 + (day as i32);
-    Ok((journal_day, format!("{year:04}-{month:02}-{day:02}")))
-}
-
-fn today_local() -> (i32, String) {
-    let today = Local::now().date_naive();
-    let year = today.year();
-    let month = today.month();
-    let day = today.day();
-    let journal_day = year * 10_000 + (month as i32) * 100 + (day as i32);
-    (journal_day, format!("{year:04}-{month:02}-{day:02}"))
-}
-
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 0,
-    }
 }

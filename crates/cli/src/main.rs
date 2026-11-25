@@ -220,12 +220,12 @@ fn dispatch(api: &mut Api<'_>, cli: Cli) -> Result<(), Error> {
                                 }
                                 SearchResultItem::Block {
                                     short_id,
-                                    page_title,
-                                    content,
+                                    breadcrumb,
+                                    matched_line,
                                     ..
                                 } => {
-                                    let first = content.lines().next().unwrap_or("");
-                                    println!("[{page_title}] - {first}  ^{short_id}");
+                                    let path = breadcrumb.join(" / ");
+                                    println!("[{path}] - {matched_line}  ^{short_id}");
                                 }
                             }
                         }

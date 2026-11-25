@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::error::Result;
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 const MIGRATION_V1: &str = "
 CREATE TABLE pages (
@@ -120,6 +120,11 @@ CREATE TABLE txn_blocks (
 CREATE INDEX idx_txn_blocks_entity ON txn_blocks(block_id, txn_id);
 ";
 
+const MIGRATION_V2: &str = "
+ALTER TABLE txns ADD COLUMN undo_group TEXT;
+CREATE INDEX idx_txns_actor_undo_group ON txns(actor, undo_group);
+";
+
 pub fn configure_and_migrate(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -133,6 +138,10 @@ pub fn configure_and_migrate(conn: &mut Connection) -> Result<()> {
         if version < 1 {
             tx.execute_batch(MIGRATION_V1)?;
             tx.pragma_update(None, "user_version", 1)?;
+        }
+        if version < 2 {
+            tx.execute_batch(MIGRATION_V2)?;
+            tx.pragma_update(None, "user_version", 2)?;
         }
         tx.commit()?;
     }

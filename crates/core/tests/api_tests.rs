@@ -309,3 +309,30 @@ fn invariants_detect_id_rev_drift() -> Result<()> {
     }
     result
 }
+
+#[test]
+fn search_items_carry_the_matched_line_without_repeating_block_content() -> Result<()> {
+    let mut store = Store::open_in_memory()?;
+    let mut api = Api::new(&mut store);
+    api.journal_append(
+        "Rust book\nHello, Cargo!\n$ cargo --version",
+        Some("2026-11-25"),
+        &user_meta("seed"),
+        false,
+    )?;
+
+    let items = api.search("cargo", 10)?;
+    let lines: Vec<String> = items
+        .iter()
+        .map(|item| match item {
+            SearchResultItem::Block { matched_line, .. } => matched_line.clone(),
+            SearchResultItem::Page { title, .. } => panic!("unexpected page {title}"),
+        })
+        .collect();
+    assert_eq!(lines, vec!["Hello, Cargo!", "$ cargo --version"]);
+
+    let json = serde_json::to_value(&items[0])?;
+    assert_eq!(json["breadcrumb"], serde_json::json!(["2026-11-25"]));
+    assert!(json.get("content").is_none());
+    Ok(())
+}

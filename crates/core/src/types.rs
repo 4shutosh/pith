@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::Id;
 use crate::ops::Op;
+use crate::snippet::Segment;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +43,7 @@ pub struct TxMeta {
     pub actor: String,
     pub session: Option<String>,
     pub summary: String,
+    pub undo_group: Option<String>,
 }
 
 impl TxMeta {
@@ -51,11 +53,17 @@ impl TxMeta {
             actor: actor.into(),
             session: None,
             summary: summary.into(),
+            undo_group: None,
         }
     }
 
     pub fn with_session(mut self, session: impl Into<String>) -> Self {
         self.session = Some(session.into());
+        self
+    }
+
+    pub fn with_undo_group(mut self, group: impl Into<String>) -> Self {
+        self.undo_group = Some(group.into());
         self
     }
 }
@@ -122,12 +130,15 @@ pub enum SearchHit {
     Page {
         page_id: Id,
         title: String,
+        highlighted_title: Vec<Segment>,
     },
     Block {
         block_id: Id,
         page_id: Id,
         page_title: String,
-        rendered_content: String,
+        breadcrumb: Vec<String>,
+        snippet: Vec<Segment>,
+        cursor: u32,
         rank: f64,
     },
 }
@@ -139,6 +150,24 @@ pub struct Backlink {
     pub page_title: String,
     pub kind: String,
     pub rendered_content: String,
+    pub spans: Vec<RenderedSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderedSpan {
+    Text(String),
+    Code(String),
+    Task(String),
+    PageLink { page_id: Option<Id>, title: String },
+    Tag { page_id: Option<Id>, title: String },
+    BlockRef { block_id: Id, text: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditOutcome {
+    pub result: ApplyResult,
+    pub focus_block: Id,
+    pub cursor: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +187,7 @@ pub struct FlatBlockRow {
     pub depth: u32,
     pub raw_content: String,
     pub rendered_content: String,
+    pub spans: Vec<RenderedSpan>,
     pub collapsed: bool,
     pub has_children: bool,
     pub version: i64,

@@ -5,7 +5,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::parser::{self, RefTarget, Span};
-use crate::types::{Backlink, PropRecord, SearchHit};
+use crate::snippet;
+use crate::types::{Backlink, PropRecord, RenderedSpan, SearchHit};
 
 pub struct DerivedRows {
     pub refs: Vec<(Id, String, Id)>,
@@ -61,6 +62,78 @@ pub fn render_content_with_cache(
     content: &str,
 ) -> Result<String> {
     parser::render_page_refs(content, |id| lookup_page_title(conn, cache, id))
+}
+
+pub fn render_spans(
+    conn: &Connection,
+    cache: &mut HashMap<Id, Option<String>>,
+    content: &str,
+) -> Result<Vec<RenderedSpan>> {
+    let mut pending_task = parser::parse_task_state(content);
+    let mut out = Vec::new();
+    for span in parser::tokenize(content) {
+        let task = pending_task.take();
+        match span {
+            Span::Text(text) => match task
+                .as_deref()
+                .and_then(|t| text.trim_start().strip_prefix(t))
+            {
+                Some(rest) => {
+                    out.push(RenderedSpan::Task(task.unwrap_or_default()));
+                    if !rest.is_empty() {
+                        out.push(RenderedSpan::Text(rest.to_string()));
+                    }
+                }
+                None => out.push(RenderedSpan::Text(text.to_string())),
+            },
+            Span::Code(code) => out.push(RenderedSpan::Code(code.to_string())),
+            Span::PageLink { raw, target } => out.push(match target {
+                RefTarget::Id(id) => match lookup_page_title(conn, cache, id)? {
+                    Some(title) => RenderedSpan::PageLink {
+                        page_id: Some(id),
+                        title,
+                    },
+                    None => RenderedSpan::Text(raw.to_string()),
+                },
+                RefTarget::Title(title) => RenderedSpan::PageLink {
+                    page_id: None,
+                    title,
+                },
+            }),
+            Span::BracketTag { raw, target } | Span::SimpleTag { raw, target } => {
+                out.push(match target {
+                    RefTarget::Id(id) => match lookup_page_title(conn, cache, id)? {
+                        Some(title) => RenderedSpan::Tag {
+                            page_id: Some(id),
+                            title,
+                        },
+                        None => RenderedSpan::Text(raw.to_string()),
+                    },
+                    RefTarget::Title(title) => RenderedSpan::Tag {
+                        page_id: None,
+                        title,
+                    },
+                })
+            }
+            Span::BlockRef { raw, id } => {
+                let referenced: Option<String> = conn
+                    .prepare_cached(
+                        "SELECT content FROM blocks WHERE id = ?1 AND deleted_at IS NULL",
+                    )?
+                    .query_row(params![id.as_bytes().as_slice()], |r| r.get(0))
+                    .optional()?;
+                let text = match referenced {
+                    Some(content) => {
+                        let rendered = render_content_with_cache(conn, cache, &content)?;
+                        rendered.lines().next().unwrap_or_default().to_string()
+                    }
+                    None => raw.to_string(),
+                };
+                out.push(RenderedSpan::BlockRef { block_id: id, text });
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn sync_derived_in_tx(
@@ -283,7 +356,11 @@ pub fn search_blocks(conn: &Connection, query: &str, limit: usize) -> Result<Vec
             let (pid_b, title) = row?;
             let page_id = Id::from_slice(&pid_b)
                 .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
-            hits.push(SearchHit::Page { page_id, title });
+            hits.push(SearchHit::Page {
+                page_id,
+                highlighted_title: snippet::highlight(&title, trimmed),
+                title,
+            });
         }
         return Ok(hits);
     }
@@ -307,7 +384,11 @@ pub fn search_blocks(conn: &Connection, query: &str, limit: usize) -> Result<Vec
         let (pid_b, title) = row?;
         let page_id = Id::from_slice(&pid_b)
             .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
-        hits.push(SearchHit::Page { page_id, title });
+        hits.push(SearchHit::Page {
+            page_id,
+            highlighted_title: snippet::highlight(&title, trimmed),
+            title,
+        });
     }
 
     let remaining = limit - hits.len();
@@ -340,16 +421,54 @@ pub fn search_blocks(conn: &Connection, query: &str, limit: usize) -> Result<Vec
         let page_id = Id::from_slice(&pid_b)
             .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
         let rendered_content = render_content_with_cache(conn, &mut title_cache, &content)?;
-        hits.push(SearchHit::Block {
-            block_id,
-            page_id,
-            page_title,
-            rendered_content,
-            rank,
-        });
+        let mut breadcrumb = vec![page_title.clone()];
+        breadcrumb.extend(ancestor_crumbs(conn, &mut title_cache, block_id)?);
+        for line in snippet::matching_lines(&rendered_content, trimmed) {
+            if hits.len() >= limit {
+                return Ok(hits);
+            }
+            hits.push(SearchHit::Block {
+                block_id,
+                page_id,
+                page_title: page_title.clone(),
+                breadcrumb: breadcrumb.clone(),
+                snippet: line.segments,
+                cursor: line.cursor as u32,
+                rank,
+            });
+        }
     }
 
     Ok(hits)
+}
+
+fn ancestor_crumbs(
+    conn: &Connection,
+    cache: &mut HashMap<Id, Option<String>>,
+    block_id: Id,
+) -> Result<Vec<String>> {
+    let mut crumbs = Vec::new();
+    let mut parent_stmt = conn.prepare_cached("SELECT parent_id FROM blocks WHERE id = ?1")?;
+    let mut content_stmt = conn.prepare_cached("SELECT content FROM blocks WHERE id = ?1")?;
+    let mut current = block_id;
+    while let Some(parent_bytes) = parent_stmt
+        .query_row(params![current.as_bytes().as_slice()], |r| {
+            r.get::<_, Option<Vec<u8>>>(0)
+        })
+        .optional()?
+        .flatten()
+    {
+        let parent = Id::from_slice(&parent_bytes)
+            .ok_or_else(|| Error::InvariantViolation("invalid parent id bytes".to_string()))?;
+        let content: String =
+            content_stmt.query_row(params![parent.as_bytes().as_slice()], |r| r.get(0))?;
+        crumbs.push(snippet::crumb(&render_content_with_cache(
+            conn, cache, &content,
+        )?));
+        current = parent;
+    }
+    crumbs.reverse();
+    Ok(crumbs)
 }
 
 pub fn query_backlinks(conn: &Connection, target: Id) -> Result<Vec<Backlink>> {
@@ -383,12 +502,14 @@ pub fn query_backlinks(conn: &Connection, target: Id) -> Result<Vec<Backlink>> {
         let page_id = Id::from_slice(&pid_b)
             .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
         let rendered_content = render_content_with_cache(conn, &mut title_cache, &content)?;
+        let spans = render_spans(conn, &mut title_cache, &content)?;
         out.push(Backlink {
             block_id,
             page_id,
             page_title,
             kind,
             rendered_content,
+            spans,
         });
     }
     Ok(out)
