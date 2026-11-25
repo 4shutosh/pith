@@ -17,8 +17,13 @@ final class BridgeTests: XCTestCase {
         let app = try PithGraph.open(path: dbPath)
         let external = try PithGraph.open(path: dbPath)
 
-        let journal = try app.getOrCreateJournal(date: "2026-11-25", actor: "me")
-        XCTAssertEqual(journal.title, "2026-11-25")
+        XCTAssertNil(try app.journalPage(date: "2026-11-25"))
+        let journalId = newId()
+        _ = try app.applyOps(
+            ops: [.createPage(id: journalId, title: "Bridge test", journalDay: nil, documentMode: false)],
+            meta: FfiTxMeta(writer: .user, actor: "setup", session: nil, summary: "setup", undoGroup: nil)
+        )
+        let journal = try XCTUnwrap(app.getPage(id: journalId))
 
         let b1 = newId()
         let b2 = newId()
@@ -29,7 +34,8 @@ final class BridgeTests: XCTestCase {
             writer: .user,
             actor: "me",
             session: nil,
-            summary: "swift test insert"
+            summary: "swift test insert",
+            undoGroup: nil
         )
         _ = try app.applyOps(
             ops: [
@@ -71,7 +77,8 @@ final class BridgeTests: XCTestCase {
             writer: .agent,
             actor: "agent:claude",
             session: nil,
-            summary: "agent edit"
+            summary: "agent edit",
+            undoGroup: nil
         )
         _ = try external.applyOps(
             ops: [.updateBlock(id: b2, content: "Updated by agent", expectedVersion: 1)],

@@ -10,9 +10,17 @@ let package = Package(
         .package(path: "PithCore")
     ],
     targets: [
+        .target(
+            name: "PithMacCore",
+            dependencies: [
+                .product(name: "PithCore", package: "PithCore")
+            ],
+            path: "Sources/PithMacCore"
+        ),
         .executableTarget(
             name: "PithMacApp",
             dependencies: [
+                "PithMacCore",
                 .product(name: "PithCore", package: "PithCore")
             ],
             path: "Sources/PithMacApp"
@@ -20,6 +28,7 @@ let package = Package(
         .testTarget(
             name: "PithMacTests",
             dependencies: [
+                "PithMacCore",
                 .product(name: "PithCore", package: "PithCore")
             ],
             path: "Tests/PithMacTests"
