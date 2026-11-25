@@ -246,3 +246,9 @@ pub struct ChangeFeed {
     pub latest_seq: i64,
     pub entries: Vec<ChangeEntry>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Crumb {
+    pub block_id: Option<Id>,
+    pub label: String,
+}

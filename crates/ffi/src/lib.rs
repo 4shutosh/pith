@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use pith_core::journal::resolve_journal_date;
-use pith_core::parser::{HighlightKind, highlight_ranges};
+use pith_core::parser::{self, CompletionContext, CompletionKind, HighlightKind, highlight_ranges};
 use pith_core::snippet::Segment;
 use pith_core::{
     ApplyResult, Backlink, ChangeEntry, ChangeFeed, EditOutcome, Error, FlatBlockRow, Id, Op,
@@ -648,6 +648,100 @@ impl PithGraph {
             .map(Into::into))
     }
 
+    pub fn move_block_up(
+        &self,
+        block_id: String,
+        base_version: i64,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiEditOutcome>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .move_block_up(block_id, base_version, &meta.into())?
+            .map(Into::into))
+    }
+
+    pub fn move_block_down(
+        &self,
+        block_id: String,
+        base_version: i64,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiEditOutcome>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .move_block_down(block_id, base_version, &meta.into())?
+            .map(Into::into))
+    }
+
+    pub fn reveal_block(&self, block_id: String, meta: FfiTxMeta) -> Result<u64, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.reveal_block(block_id, &meta.into())?)
+    }
+
+    pub fn read_block_window(
+        &self,
+        block_id: String,
+        offset: u64,
+        limit: u64,
+    ) -> Result<FfiPageWindow, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.read_block_window(block_id, offset, limit)?.into())
+    }
+
+    pub fn block_breadcrumb(&self, block_id: String) -> Result<Vec<FfiCrumb>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .block_breadcrumb(block_id)?
+            .into_iter()
+            .map(|c| FfiCrumb {
+                block_id: c.block_id.map(|id| id.to_string()),
+                label: c.label,
+            })
+            .collect())
+    }
+
+    pub fn suggest_pages(&self, query: String, limit: u32) -> Result<Vec<FfiPage>, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .suggest_pages(&query, limit as usize)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub fn paste_text(
+        &self,
+        block_id: String,
+        base_version: i64,
+        before: String,
+        after: String,
+        pasted: String,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiEditOutcome>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .paste_text(
+                block_id,
+                base_version,
+                &before,
+                &after,
+                &pasted,
+                &meta.into(),
+            )?
+            .map(Into::into))
+    }
+
+    pub fn subtree_markdown(&self, block_id: String) -> Result<String, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.subtree_markdown(block_id)?)
+    }
+
     pub fn cycle_task(
         &self,
         block_id: String,
@@ -821,6 +915,82 @@ pub fn highlight(text: String) -> Vec<FfiHighlight> {
             },
         })
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiCrumb {
+    pub block_id: Option<String>,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiCompletionKind {
+    Page,
+    Tag,
+    Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiCompletionContext {
+    pub kind: FfiCompletionKind,
+    pub query: String,
+    pub start: u32,
+    pub end: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiTextEdit {
+    pub text: String,
+    pub caret: u32,
+}
+
+impl From<CompletionContext> for FfiCompletionContext {
+    fn from(c: CompletionContext) -> Self {
+        Self {
+            kind: match c.kind {
+                CompletionKind::Page => FfiCompletionKind::Page,
+                CompletionKind::Tag => FfiCompletionKind::Tag,
+                CompletionKind::Block => FfiCompletionKind::Block,
+            },
+            query: c.query,
+            start: c.start as u32,
+            end: c.end as u32,
+        }
+    }
+}
+
+impl From<FfiCompletionContext> for CompletionContext {
+    fn from(c: FfiCompletionContext) -> Self {
+        Self {
+            kind: match c.kind {
+                FfiCompletionKind::Page => CompletionKind::Page,
+                FfiCompletionKind::Tag => CompletionKind::Tag,
+                FfiCompletionKind::Block => CompletionKind::Block,
+            },
+            query: c.query,
+            start: c.start as usize,
+            end: c.end as usize,
+        }
+    }
+}
+
+#[uniffi::export]
+pub fn completion_context(text: String, caret: u32) -> Option<FfiCompletionContext> {
+    parser::completion_context(&text, caret as usize).map(Into::into)
+}
+
+#[uniffi::export]
+pub fn apply_completion(text: String, context: FfiCompletionContext, value: String) -> FfiTextEdit {
+    let (text, caret) = parser::apply_completion(&text, &context.into(), &value);
+    FfiTextEdit {
+        text,
+        caret: caret as u32,
+    }
+}
+
+#[uniffi::export]
+pub fn auto_pair(text: String, caret: u32) -> Option<String> {
+    parser::auto_pair(&text, caret as usize)
 }
 
 #[uniffi::export]

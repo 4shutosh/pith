@@ -426,6 +426,142 @@ pub fn highlight_ranges(text: &str) -> Vec<Highlight> {
     out
 }
 
+pub fn pin_known_titles(content: &str, lookup: impl Fn(&str) -> Option<Id>) -> String {
+    let mut out = String::with_capacity(content.len());
+    for span in tokenize(content) {
+        match span {
+            Span::Text(s) | Span::Code(s) => out.push_str(s),
+            Span::BlockRef { raw, .. } => out.push_str(raw),
+            Span::PageLink { raw, target } => match target {
+                RefTarget::Title(title) => match lookup(&title) {
+                    Some(id) => out.push_str(&format!("[[{id}]]")),
+                    None => out.push_str(raw),
+                },
+                RefTarget::Id(_) => out.push_str(raw),
+            },
+            Span::BracketTag { raw, target } | Span::SimpleTag { raw, target } => match target {
+                RefTarget::Title(title) => match lookup(&title) {
+                    Some(id) => out.push_str(&format!("#[[{id}]]")),
+                    None => out.push_str(raw),
+                },
+                RefTarget::Id(_) => out.push_str(raw),
+            },
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionKind {
+    Page,
+    Tag,
+    Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionContext {
+    pub kind: CompletionKind,
+    pub query: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+pub fn completion_context(text: &str, caret: usize) -> Option<CompletionContext> {
+    let chars: Vec<char> = text.chars().collect();
+    let caret = caret.min(chars.len());
+    let before = &chars[..caret];
+    bracket_context(&chars, before, caret, '[', ']')
+        .or_else(|| bracket_context(&chars, before, caret, '(', ')'))
+        .or_else(|| tag_context(before, caret))
+}
+
+fn bracket_context(
+    chars: &[char],
+    before: &[char],
+    caret: usize,
+    open: char,
+    close: char,
+) -> Option<CompletionContext> {
+    let open_at = (1..before.len())
+        .rev()
+        .find(|&i| before[i - 1] == open && before[i] == open)?
+        - 1;
+    let query: String = before[open_at + 2..].iter().collect();
+    if query.contains(['\n', open, close]) {
+        return None;
+    }
+    let closes_after = chars.get(caret) == Some(&close) && chars.get(caret + 1) == Some(&close);
+    let end = if closes_after { caret + 2 } else { caret };
+    let (kind, start) = match open {
+        '(' => (CompletionKind::Block, open_at),
+        _ if open_at > 0 && before[open_at - 1] == '#' => (CompletionKind::Tag, open_at - 1),
+        _ => (CompletionKind::Page, open_at),
+    };
+    Some(CompletionContext {
+        kind,
+        query,
+        start,
+        end,
+    })
+}
+
+fn tag_context(before: &[char], caret: usize) -> Option<CompletionContext> {
+    let hash = before.iter().rposition(|&c| !is_tag_char(c))?;
+    if before[hash] != '#' {
+        return None;
+    }
+    let boundary =
+        hash == 0 || before[hash - 1].is_whitespace() || TAG_OPENERS.contains(&before[hash - 1]);
+    if !boundary {
+        return None;
+    }
+    Some(CompletionContext {
+        kind: CompletionKind::Tag,
+        query: before[hash + 1..].iter().collect(),
+        start: hash,
+        end: caret,
+    })
+}
+
+pub fn completion_insertion(kind: CompletionKind, value: &str) -> String {
+    match kind {
+        CompletionKind::Page => page_link_source(value),
+        CompletionKind::Tag => tag_source(value),
+        CompletionKind::Block => format!("(({value}))"),
+    }
+}
+
+pub fn apply_completion(text: &str, context: &CompletionContext, value: &str) -> (String, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let start = context.start.min(chars.len());
+    let end = context.end.clamp(start, chars.len());
+    let insertion = completion_insertion(context.kind, value);
+    let mut out: String = chars[..start].iter().collect();
+    out.push_str(&insertion);
+    out.extend(&chars[end..]);
+    (out, start + insertion.chars().count())
+}
+
+pub fn auto_pair(text: &str, caret: usize) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if caret < 2 || caret > chars.len() {
+        return None;
+    }
+    let close = match (chars[caret - 2], chars[caret - 1]) {
+        ('[', '[') => ']',
+        ('(', '(') => ')',
+        _ => return None,
+    };
+    if chars.get(caret) == Some(&close) {
+        return None;
+    }
+    let mut out: String = chars[..caret].iter().collect();
+    out.push(close);
+    out.push(close);
+    out.extend(&chars[caret..]);
+    Some(out)
+}
+
 pub fn page_link_source(title: &str) -> String {
     format!("[[{title}]]")
 }

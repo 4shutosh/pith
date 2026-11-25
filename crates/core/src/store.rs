@@ -12,8 +12,8 @@ use crate::ops::Op;
 use crate::parser;
 use crate::schema::configure_and_migrate;
 use crate::types::{
-    ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, FlatBlockRow, OpRecord, Origin, Page,
-    PageWindow, PropRecord, SearchHit, TxMeta, TxnRecord,
+    ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, Crumb, FlatBlockRow, OpRecord, Origin,
+    Page, PageWindow, PropRecord, SearchHit, TxMeta, TxnRecord,
 };
 
 pub(crate) struct VisibleBlock {
@@ -192,6 +192,10 @@ impl Store {
             .conn
             .prepare_cached("SELECT id FROM txns WHERE id_rev >= ?1 AND id_rev <= ?2")?;
         collect_ids(stmt.query_map(params![lo, hi], |r| r.get::<_, Vec<u8>>(0))?)
+    }
+
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
     }
 
     pub fn is_undone(&self, txn_id: Id) -> Result<bool> {
@@ -511,6 +515,10 @@ impl Store {
     }
 
     pub(crate) fn visible_blocks(&self, page_id: Id) -> Result<Vec<VisibleBlock>> {
+        self.visible_from(page_id, None)
+    }
+
+    fn visible_from(&self, page_id: Id, root: Option<Id>) -> Result<Vec<VisibleBlock>> {
         let live_blocks = self.list_live_blocks(page_id)?;
         let mut by_parent: HashMap<Option<Id>, Vec<&Block>> = HashMap::new();
         for block in &live_blocks {
@@ -519,9 +527,18 @@ impl Store {
 
         let mut visible = Vec::new();
         let mut stack: Vec<(&Block, u32)> = Vec::new();
-        if let Some(roots) = by_parent.get(&None) {
-            for &root in roots.iter().rev() {
-                stack.push((root, 0));
+        match root {
+            Some(root_id) => {
+                if let Some(block) = live_blocks.iter().find(|b| b.id == root_id) {
+                    stack.push((block, 0));
+                }
+            }
+            None => {
+                if let Some(roots) = by_parent.get(&None) {
+                    for &root in roots.iter().rev() {
+                        stack.push((root, 0));
+                    }
+                }
             }
         }
 
@@ -541,6 +558,109 @@ impl Store {
             }
         }
         Ok(visible)
+    }
+
+    pub fn read_block_window(&self, root_id: Id, offset: u64, limit: u64) -> Result<PageWindow> {
+        let root = self.get_block(root_id)?.ok_or(Error::NotFound(root_id))?;
+        if root.deleted_at.is_some() {
+            return Err(Error::DeletedEntity(root_id));
+        }
+        let page = self
+            .get_page(root.page_id)?
+            .ok_or(Error::NotFound(root.page_id))?;
+        let visible = self.visible_from(root.page_id, Some(root_id))?;
+        let total_visible = visible.len() as u64;
+        let start = (offset as usize).min(visible.len());
+        let end = start.saturating_add(limit as usize).min(visible.len());
+        let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+        let mut rows = Vec::with_capacity(end - start);
+        for item in &visible[start..end] {
+            rows.push(self.flat_row(
+                &item.block,
+                item.depth,
+                item.has_children,
+                &mut title_cache,
+            )?);
+        }
+        Ok(PageWindow {
+            page,
+            total_visible,
+            offset: start as u64,
+            rows,
+        })
+    }
+
+    pub fn block_breadcrumb(&self, block_id: Id) -> Result<Vec<Crumb>> {
+        let block = self.get_block(block_id)?.ok_or(Error::NotFound(block_id))?;
+        let page = self
+            .get_page(block.page_id)?
+            .ok_or(Error::NotFound(block.page_id))?;
+        let mut chain = Vec::new();
+        let mut current = Some(block);
+        while let Some(b) = current {
+            chain.push(Crumb {
+                block_id: Some(b.id),
+                label: crate::snippet::crumb(&self.render_content(&b.content)?),
+            });
+            current = match b.parent_id {
+                Some(parent) => self.get_block(parent)?,
+                None => None,
+            };
+        }
+        chain.push(Crumb {
+            block_id: None,
+            label: page.title,
+        });
+        chain.reverse();
+        Ok(chain)
+    }
+
+    pub fn visible_index(&self, block_id: Id) -> Result<Option<u64>> {
+        let block = self.get_block(block_id)?.ok_or(Error::NotFound(block_id))?;
+        Ok(self
+            .visible_blocks(block.page_id)?
+            .iter()
+            .position(|v| v.block.id == block_id)
+            .map(|i| i as u64))
+    }
+
+    pub fn suggest_pages(&self, query: &str, limit: usize) -> Result<Vec<Page>> {
+        let trimmed = query.trim();
+        let mut out: Vec<Page> = Vec::new();
+        if trimmed.is_empty() {
+            let mut pages = self.list_live_pages()?;
+            pages.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then(a.title_lower.cmp(&b.title_lower))
+            });
+            pages.truncate(limit);
+            return Ok(pages);
+        }
+        let lower = trimmed.to_lowercase();
+        let upper = format!("{lower}\u{10FFFF}");
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, title, title_lower, journal_day, document_mode,
+                    created_at, updated_at, created_by, updated_by, deleted_at, version
+             FROM pages
+             WHERE deleted_at IS NULL AND title_lower >= ?1 AND title_lower <= ?2
+             ORDER BY title_lower LIMIT ?3",
+        )?;
+        for row in stmt.query_map(params![lower, upper, limit as i64], row_to_page)? {
+            out.push(row?);
+        }
+        if out.len() < limit && trimmed.chars().count() >= 3 {
+            for hit in self.search(trimmed, limit)? {
+                if let SearchHit::Page { page_id, .. } = hit
+                    && !out.iter().any(|p| p.id == page_id)
+                    && let Some(page) = self.get_page(page_id)?
+                {
+                    out.push(page);
+                }
+            }
+        }
+        out.truncate(limit);
+        Ok(out)
     }
 
     pub fn journal_page(&self, date: Option<&str>) -> Result<Option<Page>> {
@@ -664,16 +784,41 @@ fn verify_id_rev(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn known_links(conn: &Connection, block_ids: &[Id]) -> Result<HashMap<String, Id>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT p.title_lower, p.id FROM refs r
+         JOIN pages p ON p.id = r.target
+         WHERE r.src_block = ?1",
+    )?;
+    let mut known = HashMap::new();
+    for &block_id in block_ids {
+        let rows = stmt.query_map(params![block_id.as_bytes().as_slice()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (title_lower, id_bytes) = row?;
+            if let Some(id) = Id::from_slice(&id_bytes) {
+                known.entry(title_lower).or_insert(id);
+            }
+        }
+    }
+    Ok(known)
+}
+
 fn canonicalize_content_in_tx(
     tx: &Transaction<'_>,
     content: &str,
     meta: &TxMeta,
     now: i64,
+    known: &HashMap<String, Id>,
     applied_content: &mut Vec<AppliedOp>,
     all_touched: &mut BTreeSet<Id>,
 ) -> Result<String> {
     parser::rewrite_page_refs(content, |title| {
         let lower = title.to_lowercase();
+        if let Some(&id) = known.get(&lower) {
+            return Ok(id);
+        }
         let existing: Option<Vec<u8>> = tx
             .query_row(
                 "SELECT id FROM pages WHERE title_lower = ?1 AND deleted_at IS NULL",
@@ -724,6 +869,7 @@ fn apply_in_tx(
                     content,
                     meta,
                     now,
+                    &HashMap::new(),
                     &mut applied_content,
                     &mut all_touched,
                 )?;
@@ -745,6 +891,7 @@ fn apply_in_tx(
                     content,
                     meta,
                     now,
+                    &known_links(tx, &[*id])?,
                     &mut applied_content,
                     &mut all_touched,
                 )?;

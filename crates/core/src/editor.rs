@@ -1,10 +1,11 @@
+use crate::api::{MarkdownNode, parse_markdown_tree};
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::journal::resolve_journal_date;
 use crate::ops::Op;
 use crate::order;
 use crate::parser;
-use crate::store::Store;
+use crate::store::{Store, known_links};
 use crate::types::{Block, EditOutcome, TxMeta};
 
 impl Store {
@@ -65,7 +66,7 @@ impl Store {
                 page_id: block.page_id,
                 parent_id,
                 order_key: order::between(lower.as_deref(), upper.as_deref())?,
-                content: after.to_string(),
+                content: self.pin_links(after, &[id])?,
             },
         ];
         let result = self.apply_ops(&ops, meta)?;
@@ -102,7 +103,7 @@ impl Store {
         if !text.is_empty() {
             ops.push(Op::UpdateBlock {
                 id: previous.id,
-                content: format!("{previous_text}{text}"),
+                content: format!("{previous_text}{}", self.pin_links(text, &[id])?),
                 expected_version: Some(previous.version),
             });
         }
@@ -255,6 +256,211 @@ impl Store {
         })
     }
 
+    pub fn move_block_up(
+        &mut self,
+        id: Id,
+        base_version: i64,
+        meta: &TxMeta,
+    ) -> Result<Option<EditOutcome>> {
+        let block = self.live_block(id)?;
+        let siblings = self.list_children(block.page_id, block.parent_id)?;
+        let position = sibling_position(&siblings, id)?;
+        if position == 0 {
+            return Ok(None);
+        }
+        let lower = position
+            .checked_sub(2)
+            .map(|p| siblings[p].order_key.clone());
+        let upper = siblings[position - 1].order_key.clone();
+        self.move_among_siblings(&block, base_version, lower.as_deref(), Some(&upper), meta)
+    }
+
+    pub fn move_block_down(
+        &mut self,
+        id: Id,
+        base_version: i64,
+        meta: &TxMeta,
+    ) -> Result<Option<EditOutcome>> {
+        let block = self.live_block(id)?;
+        let siblings = self.list_children(block.page_id, block.parent_id)?;
+        let position = sibling_position(&siblings, id)?;
+        let Some(next) = siblings.get(position + 1) else {
+            return Ok(None);
+        };
+        let upper = siblings.get(position + 2).map(|b| b.order_key.clone());
+        self.move_among_siblings(
+            &block,
+            base_version,
+            Some(&next.order_key),
+            upper.as_deref(),
+            meta,
+        )
+    }
+
+    fn move_among_siblings(
+        &mut self,
+        block: &Block,
+        base_version: i64,
+        lower: Option<&str>,
+        upper: Option<&str>,
+        meta: &TxMeta,
+    ) -> Result<Option<EditOutcome>> {
+        let result = self.apply_ops(
+            &[Op::MoveBlock {
+                id: block.id,
+                page_id: block.page_id,
+                parent_id: block.parent_id,
+                order_key: order::between(lower, upper)?,
+                expected_version: Some(base_version),
+            }],
+            meta,
+        )?;
+        Ok(Some(EditOutcome {
+            result,
+            focus_block: block.id,
+            cursor: None,
+        }))
+    }
+
+    pub fn reveal_block(&mut self, id: Id, meta: &TxMeta) -> Result<u64> {
+        let mut expand = Vec::new();
+        let mut parent = self.live_block(id)?.parent_id;
+        while let Some(parent_id) = parent {
+            let ancestor = self.live_block(parent_id)?;
+            if ancestor.collapsed {
+                expand.push(Op::SetCollapsed {
+                    id: ancestor.id,
+                    collapsed: false,
+                });
+            }
+            parent = ancestor.parent_id;
+        }
+        if !expand.is_empty() {
+            self.apply_ops(&expand, meta)?;
+        }
+        self.visible_index(id)?.ok_or(Error::NotFound(id))
+    }
+
+    pub fn paste_text(
+        &mut self,
+        id: Id,
+        base_version: i64,
+        before: &str,
+        after: &str,
+        pasted: &str,
+        meta: &TxMeta,
+    ) -> Result<Option<EditOutcome>> {
+        let mut nodes = parse_paste(pasted);
+        if nodes.len() < 2 && nodes.iter().all(|n| n.children.is_empty()) {
+            return Ok(None);
+        }
+        let block = self.live_block(id)?;
+        let first = nodes.remove(0);
+        let mut ops = Vec::new();
+        let mut focus = (id, 0usize);
+
+        let first_children_upper = self
+            .list_children(block.page_id, Some(id))?
+            .first()
+            .map(|b| b.order_key.clone());
+        let mut first_text = format!("{before}{}", first.content);
+        if nodes.is_empty() && first.children.is_empty() {
+            first_text.push_str(after);
+        }
+        focus.1 = before.chars().count() + first.content.chars().count();
+        insert_tree(
+            &first.children,
+            block.page_id,
+            Some(id),
+            None,
+            first_children_upper.as_deref(),
+            &mut ops,
+        )?;
+
+        let siblings = self.list_children(block.page_id, block.parent_id)?;
+        let upper = sibling_after(&siblings, id)?;
+        let mut lower = block.order_key.clone();
+        let count = nodes.len();
+        for (index, node) in nodes.into_iter().enumerate() {
+            let key = order::between(Some(&lower), upper.as_deref())?;
+            let node_id = Id::new();
+            let is_last = index + 1 == count;
+            let content = if is_last {
+                format!("{}{after}", node.content)
+            } else {
+                node.content.clone()
+            };
+            ops.push(Op::InsertBlock {
+                id: node_id,
+                page_id: block.page_id,
+                parent_id: block.parent_id,
+                order_key: key.clone(),
+                content,
+            });
+            insert_tree(
+                &node.children,
+                block.page_id,
+                Some(node_id),
+                None,
+                None,
+                &mut ops,
+            )?;
+            if is_last {
+                focus = (node_id, node.content.chars().count());
+            }
+            lower = key;
+        }
+        if count == 0 && !first.children.is_empty() {
+            first_text.push_str(after);
+        }
+
+        ops.insert(
+            0,
+            Op::UpdateBlock {
+                id,
+                content: first_text,
+                expected_version: Some(base_version),
+            },
+        );
+        let result = self.apply_ops(&ops, meta)?;
+        Ok(Some(EditOutcome {
+            result,
+            focus_block: focus.0,
+            cursor: Some(focus.1 as u32),
+        }))
+    }
+
+    pub fn subtree_markdown(&self, id: Id) -> Result<String> {
+        let block = self.live_block(id)?;
+        let mut lines = Vec::new();
+        self.write_markdown(&block, 0, &mut lines)?;
+        Ok(lines.join("\n"))
+    }
+
+    fn write_markdown(&self, block: &Block, depth: usize, lines: &mut Vec<String>) -> Result<()> {
+        let indent = "  ".repeat(depth);
+        let rendered = self.render_content(&block.content)?;
+        let mut content_lines = rendered.lines();
+        lines.push(format!(
+            "{indent}- {}",
+            content_lines.next().unwrap_or_default()
+        ));
+        for line in content_lines {
+            lines.push(format!("{indent}  {line}"));
+        }
+        for child in self.list_children(block.page_id, Some(block.id))? {
+            self.write_markdown(&child, depth + 1, lines)?;
+        }
+        Ok(())
+    }
+
+    fn pin_links(&self, text: &str, blocks: &[Id]) -> Result<String> {
+        let known = known_links(self.conn(), blocks)?;
+        Ok(parser::pin_known_titles(text, |title| {
+            known.get(&title.to_lowercase()).copied()
+        }))
+    }
+
     fn live_block(&self, id: Id) -> Result<Block> {
         let block = self.get_block(id)?.ok_or(Error::NotFound(id))?;
         if block.deleted_at.is_some() {
@@ -284,4 +490,49 @@ pub fn next_task_state(current: Option<&str>) -> Option<&'static str> {
         Some("DONE") => None,
         Some(_) => Some("TODO"),
     }
+}
+
+pub fn parse_paste(text: &str) -> Vec<MarkdownNode> {
+    let has_bullets = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .is_some_and(|l| l.trim_start().starts_with("- ") || l.trim_start().starts_with("* "));
+    if has_bullets {
+        return parse_markdown_tree(text).unwrap_or_default();
+    }
+    let normalized = text.replace("\r\n", "\n");
+    normalized
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| MarkdownNode {
+            content: p.to_string(),
+            children: Vec::new(),
+        })
+        .collect()
+}
+
+fn insert_tree(
+    nodes: &[MarkdownNode],
+    page_id: Id,
+    parent_id: Option<Id>,
+    lower: Option<&str>,
+    upper: Option<&str>,
+    ops: &mut Vec<Op>,
+) -> Result<()> {
+    let mut previous = lower.map(str::to_string);
+    for node in nodes {
+        let key = order::between(previous.as_deref(), upper)?;
+        let id = Id::new();
+        ops.push(Op::InsertBlock {
+            id,
+            page_id,
+            parent_id,
+            order_key: key.clone(),
+            content: node.content.clone(),
+        });
+        insert_tree(&node.children, page_id, Some(id), None, None, ops)?;
+        previous = Some(key);
+    }
+    Ok(())
 }
