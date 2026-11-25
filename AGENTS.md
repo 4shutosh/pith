@@ -18,6 +18,8 @@ cargo test --workspace
 - `pith-core` depends on no other workspace crate; apps talk only to `pith-ffi`.
 - All writes go through `apply_ops` in `pith-core`; SQL lives only in `pith-core`.
 - Every op ships with a test that applies it, applies its inverse, and checks the state is restored.
+- Tests must be objectively correct, never self-validating: assert against expected values written by hand (literals, or derived by an independent method), never against the output of the code under test or a helper that shares its logic. Prove each new test by breaking the code it covers and watching it fail.
+- Editor behaviour (split, merge, indent, outdent, order keys, parsing for display) lives in `pith-core`; apps call it through `pith-ffi` and never re-implement it.
 - No comments or doc comments. Code is the truth: use names, types, small functions, `expect("…")` messages and tests. Only exception: `// SAFETY:` on `unsafe` in `pith-ffi`.
 - No `unwrap()` in library code; libraries return typed error enums, `anyhow` only in binaries and tests.
 - Keep `docs/ARCHITECTURE.md` timeless and update it in the same change when a design decision changes.
