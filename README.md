@@ -44,6 +44,8 @@ An open-source, local-first, **agent-native outliner** built for speed.
 - **Editor:** One live text field per active block; inactive blocks render as styled text with native cursor/focus navigation across blocks.
 - **Sync (planned):** Offline-first sync (starting simple, evolving to CRDT-based multi-device sync via Loro) with a self-hostable relay server.
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+
 ---
 
 ## Performance Budgets
@@ -80,3 +82,5 @@ An open-source, local-first, **agent-native outliner** built for speed.
 2. **Android Editor Prototype** — UniFFI bridge + Jetpack Compose outliner editor hitting 120fps and IME/focus edge cases.
 3. **Android Daily Driver** — Journals, pages, backlinks, search, quick capture.
 4. **Sync + macOS** — Multi-device sync server and native SwiftUI macOS app.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for detailed milestones.
