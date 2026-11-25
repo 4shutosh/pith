@@ -115,3 +115,35 @@ pub struct ApplyResult {
     pub txn_id: Option<Id>,
     pub inverse_ops: Vec<Op>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchHit {
+    Page {
+        page_id: Id,
+        title: String,
+    },
+    Block {
+        block_id: Id,
+        page_id: Id,
+        page_title: String,
+        rendered_content: String,
+        rank: f64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backlink {
+    pub block_id: Id,
+    pub page_id: Id,
+    pub page_title: String,
+    pub kind: String,
+    pub rendered_content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropRecord {
+    pub block_id: Id,
+    pub key: String,
+    pub value: String,
+    pub value_ref: Option<Id>,
+}

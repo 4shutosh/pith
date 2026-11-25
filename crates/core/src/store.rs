@@ -4,11 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
+use crate::derive;
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::ops::Op;
+use crate::parser;
 use crate::schema::configure_and_migrate;
-use crate::types::{ApplyResult, Block, OpRecord, Origin, Page, TxMeta, TxnRecord};
+use crate::types::{
+    ApplyResult, Backlink, Block, OpRecord, Origin, Page, PropRecord, SearchHit, TxMeta, TxnRecord,
+};
 
 pub struct Store {
     conn: Connection,
@@ -60,6 +64,12 @@ impl Store {
         if meta.origin == Origin::Undo {
             return Err(Error::ReservedOrigin(Origin::Undo));
         }
+        if ops.is_empty() {
+            return Ok(ApplyResult {
+                txn_id: None,
+                inverse_ops: Vec::new(),
+            });
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -73,12 +83,12 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        let (target_rowid, target_txn) = fetch_txn_with_rowid(&tx, txn_id)?;
+        let (target_seq, target_txn) = fetch_txn_with_seq(&tx, txn_id)?;
         if txn_is_undone(&tx, txn_id)? {
             return Err(Error::AlreadyUndone(txn_id));
         }
         if !force {
-            ensure_no_later_foreign_edits(&tx, txn_id, target_rowid, &target_txn.actor)?;
+            ensure_no_later_foreign_edits(&tx, txn_id, target_seq, &target_txn.actor)?;
         }
 
         let inverse_ops: Vec<Op> = fetch_txn_ops(&tx, txn_id)?
@@ -220,7 +230,7 @@ impl Store {
             Some(actor_name) => {
                 let mut stmt = self.conn.prepare(
                     "SELECT id, ts, origin, actor, session, summary, undoes
-                     FROM txns WHERE actor = ?1 ORDER BY rowid DESC",
+                     FROM txns WHERE actor = ?1 ORDER BY seq DESC",
                 )?;
                 let rows = stmt.query_map(params![actor_name], row_to_txn)?;
                 for row in rows {
@@ -230,7 +240,7 @@ impl Store {
             None => {
                 let mut stmt = self.conn.prepare(
                     "SELECT id, ts, origin, actor, session, summary, undoes
-                     FROM txns ORDER BY rowid DESC",
+                     FROM txns ORDER BY seq DESC",
                 )?;
                 let rows = stmt.query_map([], row_to_txn)?;
                 for row in rows {
@@ -283,9 +293,103 @@ impl Store {
         Ok(LiveSnapshot { pages, blocks })
     }
 
-    pub fn check_invariants(&self) -> Result<()> {
-        verify_invariants_conn(&self.conn)
+    pub fn render_content(&self, content: &str) -> Result<String> {
+        let mut cache = HashMap::new();
+        derive::render_content_with_cache(&self.conn, &mut cache, content)
     }
+
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        derive::search_blocks(&self.conn, query, limit)
+    }
+
+    pub fn backlinks(&self, target: Id) -> Result<Vec<Backlink>> {
+        derive::query_backlinks(&self.conn, target)
+    }
+
+    pub fn find_props(&self, key: &str, value: Option<&str>) -> Result<Vec<PropRecord>> {
+        derive::query_props(&self.conn, key, value)
+    }
+
+    pub fn list_tasks(&self, state: Option<&str>) -> Result<Vec<Block>> {
+        let mut out = Vec::new();
+        match state {
+            Some(s) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT b.id, b.page_id, b.parent_id, b.order_key, b.content, b.collapsed,
+                            b.created_at, b.updated_at, b.created_by, b.updated_by, b.deleted_at, b.version
+                     FROM tasks t
+                     JOIN blocks b ON b.id = t.block_id
+                     JOIN pages p ON p.id = b.page_id
+                     WHERE t.state = ?1 AND b.deleted_at IS NULL AND p.deleted_at IS NULL
+                     ORDER BY p.title_lower, b.order_key, b.id",
+                )?;
+                let rows = stmt.query_map(params![s], row_to_block)?;
+                for row in rows {
+                    out.push(row?);
+                }
+            }
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT b.id, b.page_id, b.parent_id, b.order_key, b.content, b.collapsed,
+                            b.created_at, b.updated_at, b.created_by, b.updated_by, b.deleted_at, b.version
+                     FROM tasks t
+                     JOIN blocks b ON b.id = t.block_id
+                     JOIN pages p ON p.id = b.page_id
+                     WHERE b.deleted_at IS NULL AND p.deleted_at IS NULL
+                     ORDER BY p.title_lower, b.order_key, b.id",
+                )?;
+                let rows = stmt.query_map([], row_to_block)?;
+                for row in rows {
+                    out.push(row?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn rebuild_derived(&mut self) -> Result<()> {
+        derive::rebuild_all(&mut self.conn)
+    }
+
+    pub fn check_invariants(&self) -> Result<()> {
+        verify_invariants_conn(&self.conn)?;
+        derive::verify_derived_invariants(&self.conn)
+    }
+}
+
+fn canonicalize_content_in_tx(
+    tx: &Transaction<'_>,
+    content: &str,
+    meta: &TxMeta,
+    now: i64,
+    applied_content: &mut Vec<AppliedOp>,
+    all_touched: &mut BTreeSet<Id>,
+) -> Result<String> {
+    parser::rewrite_page_refs(content, |title| {
+        let lower = title.to_lowercase();
+        let existing: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT id FROM pages WHERE title_lower = ?1 AND deleted_at IS NULL",
+                params![lower],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(bytes) = existing {
+            return Id::from_slice(&bytes)
+                .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()));
+        }
+        let new_id = Id::new();
+        let create_op = Op::CreatePage {
+            id: new_id,
+            title: title.to_string(),
+            journal_day: None,
+            document_mode: false,
+        };
+        let applied = apply_single_op(tx, &create_op, meta, now)?;
+        all_touched.extend(applied.touched.iter().copied());
+        applied_content.push(applied);
+        Ok(new_id)
+    })
 }
 
 fn apply_in_tx(
@@ -297,15 +401,66 @@ fn apply_in_tx(
     let now = now_millis();
     let mut applied_content = Vec::new();
     let mut all_touched = BTreeSet::new();
+    let mut renamed_pages = BTreeSet::new();
 
     for op in ops {
-        let applied = apply_single_op(tx, op, meta, now)?;
-        if !op.is_view_state() {
+        let resolved_op = match op {
+            Op::InsertBlock {
+                id,
+                page_id,
+                parent_id,
+                order_key,
+                content,
+            } => {
+                let canonical = canonicalize_content_in_tx(
+                    tx,
+                    content,
+                    meta,
+                    now,
+                    &mut applied_content,
+                    &mut all_touched,
+                )?;
+                Op::InsertBlock {
+                    id: *id,
+                    page_id: *page_id,
+                    parent_id: *parent_id,
+                    order_key: order_key.clone(),
+                    content: canonical,
+                }
+            }
+            Op::UpdateBlock {
+                id,
+                content,
+                expected_version,
+            } => {
+                let canonical = canonicalize_content_in_tx(
+                    tx,
+                    content,
+                    meta,
+                    now,
+                    &mut applied_content,
+                    &mut all_touched,
+                )?;
+                Op::UpdateBlock {
+                    id: *id,
+                    content: canonical,
+                    expected_version: *expected_version,
+                }
+            }
+            other => other.clone(),
+        };
+
+        let applied = apply_single_op(tx, &resolved_op, meta, now)?;
+        if !resolved_op.is_view_state() {
+            if let Op::RenamePage { id, .. } = &resolved_op {
+                renamed_pages.insert(*id);
+            }
             all_touched.extend(applied.touched.iter().copied());
             applied_content.push(applied);
         }
     }
 
+    derive::sync_derived_in_tx(tx, &all_touched, &renamed_pages)?;
     verify_touched_invariants(tx, &all_touched)?;
 
     if applied_content.is_empty() {
@@ -381,15 +536,15 @@ fn as_undo_conflict(txn_id: Id, err: Error) -> Error {
     }
 }
 
-fn fetch_txn_with_rowid(conn: &Connection, txn_id: Id) -> Result<(i64, TxnRecord)> {
+fn fetch_txn_with_seq(conn: &Connection, txn_id: Id) -> Result<(i64, TxnRecord)> {
     conn.query_row(
-        "SELECT rowid, id, ts, origin, actor, session, summary, undoes
+        "SELECT seq, id, ts, origin, actor, session, summary, undoes
          FROM txns WHERE id = ?1",
         params![txn_id.as_bytes().as_slice()],
         |row| {
-            let rowid: i64 = row.get(0)?;
+            let seq: i64 = row.get(0)?;
             let txn = row_to_txn_offset(row, 1)?;
-            Ok((rowid, txn))
+            Ok((seq, txn))
         },
     )
     .optional()?
@@ -442,7 +597,7 @@ fn txn_is_undone(conn: &Connection, txn_id: Id) -> Result<bool> {
 fn ensure_no_later_foreign_edits(
     conn: &Connection,
     txn_id: Id,
-    target_rowid: i64,
+    target_seq: i64,
     original_actor: &str,
 ) -> Result<()> {
     let conflict: Option<(Vec<u8>, String)> = conn
@@ -452,11 +607,11 @@ fn ensure_no_later_foreign_edits(
              JOIN txn_blocks tb_later ON tb_orig.block_id = tb_later.block_id
              JOIN txns t_later ON tb_later.txn_id = t_later.id
              WHERE tb_orig.txn_id = ?1
-               AND t_later.rowid > ?2
+               AND t_later.seq > ?2
                AND t_later.actor != ?3
-             ORDER BY t_later.rowid ASC
+             ORDER BY t_later.seq ASC
              LIMIT 1",
-            params![txn_id.as_bytes().as_slice(), target_rowid, original_actor],
+            params![txn_id.as_bytes().as_slice(), target_seq, original_actor],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;

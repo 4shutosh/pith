@@ -781,6 +781,38 @@ fn is_ancestor(store: &Store, candidate: Id, mut node: Id) -> bool {
     }
 }
 
+fn rich_block_content(text: u16, counter: u64, live_pages: &[Id], live_blocks: &[Id]) -> String {
+    match text % 6 {
+        0 => format!(
+            "TODO Work on [[RefPage-{}]] #tag-{} item-{counter}",
+            text % 4,
+            text % 3
+        ),
+        1 => format!(
+            "DONE Finished #[[Topic {}]] `[[ignored]]` note-{counter}\npriority:: p{}",
+            text % 3,
+            text % 4
+        ),
+        2 => {
+            if let Some(&target_block) = live_blocks.get((text as usize) % live_blocks.len().max(1))
+            {
+                format!("Depends on (({target_block})) and [[RefPage-{}]]", text % 4)
+            } else {
+                format!("Plain note {text}-{counter}")
+            }
+        }
+        3 => {
+            if let Some(&target_page) = live_pages.get((text as usize) % live_pages.len().max(1)) {
+                format!("owner:: [[{target_page}]]\nstatus:: active-{counter}")
+            } else {
+                format!("status:: active-{counter}")
+            }
+        }
+        4 => format!("```\n#include <stdio.h>\n[[not-a-page]]\n```\nAfter code {text}-{counter}"),
+        _ => format!("block-{text}-{counter} #tag-{}", text % 3),
+    }
+}
+
 fn build_op(store: &Store, action: Action, counter: u64) -> Option<Op> {
     let snapshot_before = store.live_snapshot().expect("snapshot before");
     let live_pages: Vec<Id> = snapshot_before.pages.keys().copied().collect();
@@ -845,14 +877,14 @@ fn build_op(store: &Store, action: Action, counter: u64) -> Option<Op> {
                     page_id,
                     parent_id,
                     order_key,
-                    content: format!("block-{text}-{counter}"),
+                    content: rich_block_content(text, counter, &live_pages, &live_blocks),
                 }
             }),
         Action::UpdateBlock { block_idx, text } => live_blocks
             .get(block_idx % live_blocks.len().max(1))
             .map(|&id| Op::UpdateBlock {
                 id,
-                content: format!("updated-{text}-{counter}"),
+                content: rich_block_content(text, counter, &live_pages, &live_blocks),
                 expected_version: None,
             }),
         Action::MoveBlock {

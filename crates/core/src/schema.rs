@@ -6,7 +6,8 @@ const CURRENT_SCHEMA_VERSION: i64 = 1;
 
 const MIGRATION_V1: &str = "
 CREATE TABLE pages (
-    id BLOB PRIMARY KEY,
+    seq INTEGER PRIMARY KEY,
+    id BLOB NOT NULL UNIQUE,
     title TEXT NOT NULL,
     title_lower TEXT NOT NULL,
     journal_day INTEGER,
@@ -26,7 +27,8 @@ CREATE UNIQUE INDEX idx_pages_journal_day_live
     ON pages(journal_day) WHERE deleted_at IS NULL;
 
 CREATE TABLE blocks (
-    id BLOB PRIMARY KEY,
+    seq INTEGER PRIMARY KEY,
+    id BLOB NOT NULL UNIQUE,
     page_id BLOB NOT NULL,
     parent_id BLOB,
     order_key TEXT NOT NULL,
@@ -71,13 +73,18 @@ CREATE TABLE tasks (
 );
 
 CREATE VIRTUAL TABLE blocks_fts USING fts5(
-    block_id UNINDEXED,
     text,
-    page_title
+    tokenize='trigram'
+);
+
+CREATE VIRTUAL TABLE pages_fts USING fts5(
+    title,
+    tokenize='trigram'
 );
 
 CREATE TABLE txns (
-    id BLOB PRIMARY KEY,
+    seq INTEGER PRIMARY KEY,
+    id BLOB NOT NULL UNIQUE,
     ts INTEGER NOT NULL,
     origin TEXT NOT NULL,
     actor TEXT NOT NULL,

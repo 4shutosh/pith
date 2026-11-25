@@ -21,7 +21,7 @@ For notes on prior art, see [research/logseq-db.md](research/logseq-db.md).
 | D10 | **Undo history is persistent, in SQLite, and filterable by actor.** If one entry can't be applied, it is skipped; history is only trimmed by GC (D7). | Undo survives restarts and is available to every surface. A whole agent session can be reverted. |
 | D11 | **Stable UUIDv7 IDs and fractional-index sibling ordering**, with a deterministic tie-break (uuid) to repair duplicate keys. | A move rewrites one row. Concurrent inserts and moves merge cleanly, which is what sync needs. |
 | D12 | **No daemon.** The core is a library. Each process opens SQLite in WAL mode with `BEGIN IMMEDIATE` + `busy_timeout`. Long-lived apps detect external writes via `PRAGMA data_version` and a txn cursor. | SQLite already serialises writers safely. Add a daemon only if change-notification latency demands it. |
-| D13 | **Search is FTS5 in the same database, updated synchronously in the write txn, and rebuildable from content.** It indexes the block's own text with `[[page]]`/`#tag` UUIDs rendered to titles, plus the page title. `((block refs))` are not expanded. The tokenizer (`unicode61` vs `trigram`) is chosen by benchmark. | Search is never stale and there is no async work to drop. Not expanding block refs means editing a block re-indexes only that block. |
+| D13 | **Search is FTS5 with the `trigram` tokenizer, in the same database, updated synchronously in the write txn, and rebuildable from content.** The tokenizer is fixed in the schema. Page titles and block text have separate indexes: `pages_fts` holds live page titles, `blocks_fts` holds each block's own text with `[[page]]`/`#tag` UUIDs rendered to titles; `((block refs))` are neither expanded nor indexed. A search returns page hits first, then block hits. Queries shorter than 3 characters return only page hits, by title prefix. | Trigram gives substring matches ("map" finds "Roadmap") and works for languages without word spaces. Separate title and text indexes make every page findable, including empty ones, and stop one page's blocks from crowding out results just because its title matches. Prefix lookup keeps short queries index-backed. Search is never stale. Not expanding block refs means editing a block re-indexes only that block. |
 
 ---
 
@@ -29,13 +29,13 @@ For notes on prior art, see [research/logseq-db.md](research/logseq-db.md).
 
 ```sql
 -- content
-pages  (id BLOB PK, title TEXT, title_lower TEXT, journal_day INTEGER NULL,
+pages  (seq INTEGER PRIMARY KEY, id BLOB UNIQUE, title TEXT, title_lower TEXT, journal_day INTEGER NULL,
         document_mode INTEGER DEFAULT 0,
         created_at, updated_at, created_by, updated_by, deleted_at NULL, version INTEGER)
   UNIQUE INDEX (title_lower) WHERE deleted_at IS NULL   -- a soft-deleted title can be reused
   UNIQUE INDEX (journal_day) WHERE deleted_at IS NULL   -- one journal page per day
 
-blocks (id BLOB PK, page_id BLOB, parent_id BLOB NULL, order_key TEXT,
+blocks (seq INTEGER PRIMARY KEY, id BLOB UNIQUE, page_id BLOB, parent_id BLOB NULL, order_key TEXT,
         content TEXT,            -- raw text, refs stored as UUIDs (D4)
         collapsed INTEGER,       -- view state, see §3
         created_at, updated_at, created_by, updated_by, deleted_at NULL, version INTEGER)
@@ -48,10 +48,12 @@ refs   (src_block BLOB, kind TEXT /* page|block|tag|prop */, target BLOB)
 props  (block_id BLOB, key TEXT, value TEXT, value_ref BLOB NULL)
   INDEX (key, value)
 tasks  (block_id BLOB PK, state TEXT /* TODO|DOING|DONE|... */)
-blocks_fts USING fts5(text, page_title)   -- see D13
+blocks_fts USING fts5(text, tokenize='trigram')    -- rowid = blocks.seq, see D13
+pages_fts  USING fts5(title, tokenize='trigram')   -- rowid = pages.seq, live pages only
 
 -- history / attribution
-txns       (id BLOB PK /* uuidv7 */, ts, origin TEXT /* user|agent|import|undo|sync */,
+txns       (seq INTEGER PRIMARY KEY, id BLOB UNIQUE /* uuidv7 */, ts,
+            origin TEXT /* user|agent|import|undo|sync */,
             actor TEXT /* 'me' | 'agent:claude' */, session TEXT NULL, summary TEXT,
             undoes BLOB NULL /* txn this one reverts */)
   INDEX (undoes)
@@ -63,7 +65,7 @@ txn_blocks (txn_id BLOB, block_id BLOB)   -- which blocks/pages each txn touched
 **Invariants**
 - A block's `page_id` equals its parent's `page_id`. A cross-page move rewrites `page_id` for the whole subtree in the same txn.
 - No cycles in `parent_id`.
-- Derived rows (`refs`, `props`, `tasks`, `blocks_fts`) exist exactly for live blocks.
+- Derived rows (`refs`, `props`, `tasks`, `blocks_fts`) exist exactly for live blocks, and `pages_fts` rows exactly for live pages.
   - Tombstoning a block removes them.
   - Restoring it re-derives them.
 
@@ -83,6 +85,7 @@ apply_ops(ops, TxMeta{origin, actor, session, summary})
        - [[Title]] for a page that doesn't exist yet → create_page in this txn
          (its inverse is part of the txn, so undo removes the page too)
        - tombstoned blocks → drop their derived rows; restored blocks → re-derive
+       - touched pages → sync their pages_fts row
        - rename_page → re-index blocks_fts for blocks that link to that page
      bump version, stamp updated_by
   5. check invariants (§2)
