@@ -1,0 +1,18 @@
+[package]
+name = "pith-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pith"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+pith-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true

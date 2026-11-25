@@ -37,6 +37,10 @@ impl Id {
         let take = len.clamp(1, hex.len());
         hex[hex.len() - take..].to_string()
     }
+
+    pub fn reversed_hex(&self) -> String {
+        self.0.simple().to_string().chars().rev().collect()
+    }
 }
 
 impl Default for Id {

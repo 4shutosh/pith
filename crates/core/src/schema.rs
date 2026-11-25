@@ -8,6 +8,7 @@ const MIGRATION_V1: &str = "
 CREATE TABLE pages (
     seq INTEGER PRIMARY KEY,
     id BLOB NOT NULL UNIQUE,
+    id_rev TEXT NOT NULL,
     title TEXT NOT NULL,
     title_lower TEXT NOT NULL,
     journal_day INTEGER,
@@ -20,6 +21,8 @@ CREATE TABLE pages (
     version INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE INDEX idx_pages_id_rev ON pages(id_rev);
+
 CREATE UNIQUE INDEX idx_pages_title_lower_live
     ON pages(title_lower) WHERE deleted_at IS NULL;
 
@@ -29,6 +32,7 @@ CREATE UNIQUE INDEX idx_pages_journal_day_live
 CREATE TABLE blocks (
     seq INTEGER PRIMARY KEY,
     id BLOB NOT NULL UNIQUE,
+    id_rev TEXT NOT NULL,
     page_id BLOB NOT NULL,
     parent_id BLOB,
     order_key TEXT NOT NULL,
@@ -41,6 +45,8 @@ CREATE TABLE blocks (
     deleted_at INTEGER,
     version INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE INDEX idx_blocks_id_rev ON blocks(id_rev);
 
 CREATE INDEX idx_blocks_parent_order
     ON blocks(parent_id, order_key, id);
@@ -85,6 +91,7 @@ CREATE VIRTUAL TABLE pages_fts USING fts5(
 CREATE TABLE txns (
     seq INTEGER PRIMARY KEY,
     id BLOB NOT NULL UNIQUE,
+    id_rev TEXT NOT NULL,
     ts INTEGER NOT NULL,
     origin TEXT NOT NULL,
     actor TEXT NOT NULL,
@@ -93,6 +100,7 @@ CREATE TABLE txns (
     undoes BLOB
 );
 
+CREATE INDEX idx_txns_id_rev ON txns(id_rev);
 CREATE INDEX idx_txns_undoes ON txns(undoes);
 
 CREATE TABLE ops (

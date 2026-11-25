@@ -19,7 +19,7 @@ cargo test --workspace
 - All writes go through `apply_ops` in `pith-core`; SQL lives only in `pith-core`.
 - Every op ships with a test that applies it, applies its inverse, and checks the state is restored.
 - No comments or doc comments. Code is the truth: use names, types, small functions, `expect("…")` messages and tests. Only exception: `// SAFETY:` on `unsafe` in `pith-ffi`.
-- No `unwrap()` in library code; `thiserror` in libraries, `anyhow` only in binaries and tests.
+- No `unwrap()` in library code; libraries return typed error enums, `anyhow` only in binaries and tests.
 - Keep `docs/ARCHITECTURE.md` timeless and update it in the same change when a design decision changes.
 
 ## Git

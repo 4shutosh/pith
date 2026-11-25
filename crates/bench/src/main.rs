@@ -2,7 +2,7 @@ use std::env;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use pith_core::{Id, Op, Origin, Store, TxMeta, order};
+use pith_core::{Api, Id, Op, Origin, Store, TxMeta, order};
 
 const PAGE_COUNT: usize = 1_000;
 const BLOCKS_PER_PAGE: usize = 100;
@@ -104,6 +104,26 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
         Ok(())
     })?;
 
+    let api_search = {
+        let api = Api::new(&mut store);
+        let mut api_idx = 0usize;
+        measure_stats(ITERATIONS, || -> Result<()> {
+            let q = queries[api_idx % queries.len()];
+            api_idx += 1;
+            let hits = api.search(q, 20)?;
+            assert!(!hits.is_empty());
+            Ok(())
+        })?
+    };
+
+    let api_show = {
+        let api = Api::new(&mut store);
+        measure_stats(ITERATIONS, || -> Result<()> {
+            let _ = api.show("Page 0", None)?;
+            Ok(())
+        })?
+    };
+
     println!();
     println!("Results ({ITERATIONS} runs on {TOTAL_BLOCKS} blocks, trigram FTS5):");
     println!(
@@ -121,6 +141,14 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
     println!(
         "  search (< 3 chars)    : p50={:>6.2} ms  p95={:>6.2} ms  (budget < {SEARCH_BUDGET_MS:.0} ms)",
         short_search.median_ms, short_search.p95_ms
+    );
+    println!(
+        "  api.search (short id) : p50={:>6.2} ms  p95={:>6.2} ms  (budget < {SEARCH_BUDGET_MS:.0} ms)",
+        api_search.median_ms, api_search.p95_ms
+    );
+    println!(
+        "  api.show (100 blocks) : p50={:>6.2} ms  p95={:>6.2} ms",
+        api_show.median_ms, api_show.p95_ms
     );
 
     if check_budgets {
@@ -146,6 +174,12 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
             bail!(
                 "short search p95 exceeded budget: {:.2} ms >= {SEARCH_BUDGET_MS:.0} ms",
                 short_search.p95_ms
+            );
+        }
+        if api_search.p95_ms >= SEARCH_BUDGET_MS {
+            bail!(
+                "api.search p95 exceeded budget: {:.2} ms >= {SEARCH_BUDGET_MS:.0} ms",
+                api_search.p95_ms
             );
         }
     }

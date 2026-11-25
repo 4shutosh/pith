@@ -113,6 +113,7 @@ pub struct OpRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyResult {
     pub txn_id: Option<Id>,
+    pub applied_ops: Vec<Op>,
     pub inverse_ops: Vec<Op>,
 }
 

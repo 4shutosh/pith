@@ -61,12 +61,21 @@ impl Store {
     }
 
     pub fn apply_ops(&mut self, ops: &[Op], meta: &TxMeta) -> Result<ApplyResult> {
+        self.apply_ops_inner(ops, meta, false)
+    }
+
+    pub fn dry_run_ops(&mut self, ops: &[Op], meta: &TxMeta) -> Result<ApplyResult> {
+        self.apply_ops_inner(ops, meta, true)
+    }
+
+    fn apply_ops_inner(&mut self, ops: &[Op], meta: &TxMeta, dry_run: bool) -> Result<ApplyResult> {
         if meta.origin == Origin::Undo {
             return Err(Error::ReservedOrigin(Origin::Undo));
         }
         if ops.is_empty() {
             return Ok(ApplyResult {
                 txn_id: None,
+                applied_ops: Vec::new(),
                 inverse_ops: Vec::new(),
             });
         }
@@ -74,11 +83,27 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = apply_in_tx(&tx, ops, meta, None)?;
-        tx.commit()?;
+        if !dry_run {
+            tx.commit()?;
+        }
         Ok(result)
     }
 
     pub fn undo(&mut self, txn_id: Id, meta: &TxMeta, force: bool) -> Result<ApplyResult> {
+        self.undo_inner(txn_id, meta, force, false)
+    }
+
+    pub fn dry_run_undo(&mut self, txn_id: Id, meta: &TxMeta, force: bool) -> Result<ApplyResult> {
+        self.undo_inner(txn_id, meta, force, true)
+    }
+
+    fn undo_inner(
+        &mut self,
+        txn_id: Id,
+        meta: &TxMeta,
+        force: bool,
+        dry_run: bool,
+    ) -> Result<ApplyResult> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -110,8 +135,82 @@ impl Store {
 
         let result = apply_in_tx(&tx, &inverse_ops, &undo_meta, Some(txn_id))
             .map_err(|err| as_undo_conflict(txn_id, err))?;
-        tx.commit()?;
+        if !dry_run {
+            tx.commit()?;
+        }
         Ok(result)
+    }
+
+    pub fn get_page_by_journal_day(&self, journal_day: i32) -> Result<Option<Page>> {
+        self.conn
+            .query_row(
+                "SELECT id, title, title_lower, journal_day, document_mode,
+                        created_at, updated_at, created_by, updated_by, deleted_at, version
+                 FROM pages WHERE journal_day = ?1 AND deleted_at IS NULL",
+                params![journal_day],
+                row_to_page,
+            )
+            .optional()
+            .map_err(Error::from)
+    }
+
+    pub fn short_id(&self, id: Id) -> Result<String> {
+        let rev = id.reversed_hex();
+        let mut max_common = 0usize;
+        for (prev_sql, next_sql) in [
+            (
+                "SELECT id_rev FROM pages WHERE id_rev < ?1 ORDER BY id_rev DESC LIMIT 1",
+                "SELECT id_rev FROM pages WHERE id_rev > ?1 ORDER BY id_rev ASC LIMIT 1",
+            ),
+            (
+                "SELECT id_rev FROM blocks WHERE id_rev < ?1 ORDER BY id_rev DESC LIMIT 1",
+                "SELECT id_rev FROM blocks WHERE id_rev > ?1 ORDER BY id_rev ASC LIMIT 1",
+            ),
+            (
+                "SELECT id_rev FROM txns WHERE id_rev < ?1 ORDER BY id_rev DESC LIMIT 1",
+                "SELECT id_rev FROM txns WHERE id_rev > ?1 ORDER BY id_rev ASC LIMIT 1",
+            ),
+        ] {
+            for sql in [prev_sql, next_sql] {
+                let mut stmt = self.conn.prepare_cached(sql)?;
+                let neighbor: Option<String> =
+                    stmt.query_row(params![rev], |r| r.get(0)).optional()?;
+                if let Some(other) = neighbor {
+                    let common = common_prefix_len(&rev, &other);
+                    if common > max_common {
+                        max_common = common;
+                    }
+                }
+            }
+        }
+        let len = (max_common + 1).clamp(6, 32);
+        Ok(id.short_suffix(len))
+    }
+
+    pub fn find_live_pages_by_suffix(&self, suffix: &str) -> Result<Vec<Id>> {
+        let (lo, hi) = suffix_rev_bounds(suffix);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM pages
+             WHERE id_rev >= ?1 AND id_rev <= ?2 AND deleted_at IS NULL",
+        )?;
+        collect_ids(stmt.query_map(params![lo, hi], |r| r.get::<_, Vec<u8>>(0))?)
+    }
+
+    pub fn find_live_blocks_by_suffix(&self, suffix: &str) -> Result<Vec<Id>> {
+        let (lo, hi) = suffix_rev_bounds(suffix);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM blocks
+             WHERE id_rev >= ?1 AND id_rev <= ?2 AND deleted_at IS NULL",
+        )?;
+        collect_ids(stmt.query_map(params![lo, hi], |r| r.get::<_, Vec<u8>>(0))?)
+    }
+
+    pub fn find_txns_by_suffix(&self, suffix: &str) -> Result<Vec<Id>> {
+        let (lo, hi) = suffix_rev_bounds(suffix);
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT id FROM txns WHERE id_rev >= ?1 AND id_rev <= ?2")?;
+        collect_ids(stmt.query_map(params![lo, hi], |r| r.get::<_, Vec<u8>>(0))?)
     }
 
     pub fn is_undone(&self, txn_id: Id) -> Result<bool> {
@@ -353,8 +452,28 @@ impl Store {
 
     pub fn check_invariants(&self) -> Result<()> {
         verify_invariants_conn(&self.conn)?;
+        verify_id_rev(&self.conn)?;
         derive::verify_derived_invariants(&self.conn)
     }
+}
+
+fn verify_id_rev(conn: &Connection) -> Result<()> {
+    for table in ["pages", "blocks", "txns"] {
+        let mut stmt = conn.prepare(&format!("SELECT id, id_rev FROM {table}"))?;
+        for row in stmt.query_map([], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (bytes, id_rev) = row?;
+            let id = Id::from_slice(&bytes)
+                .ok_or_else(|| Error::InvariantViolation(format!("invalid id bytes in {table}")))?;
+            if id.reversed_hex() != id_rev {
+                return Err(Error::InvariantViolation(format!(
+                    "{table}.id_rev does not match id {id}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn canonicalize_content_in_tx(
@@ -466,16 +585,19 @@ fn apply_in_tx(
     if applied_content.is_empty() {
         return Ok(ApplyResult {
             txn_id: None,
+            applied_ops: Vec::new(),
             inverse_ops: Vec::new(),
         });
     }
 
     let txn_id = Id::new();
+    let txn_id_rev = txn_id.reversed_hex();
     tx.execute(
-        "INSERT INTO txns (id, ts, origin, actor, session, summary, undoes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO txns (id, id_rev, ts, origin, actor, session, summary, undoes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             txn_id.as_bytes().as_slice(),
+            txn_id_rev,
             now,
             meta.origin.as_str(),
             meta.actor,
@@ -508,6 +630,11 @@ fn apply_in_tx(
         )?;
     }
 
+    let applied_ops = applied_content
+        .iter()
+        .map(|item| item.forward.clone())
+        .collect();
+
     let inverse_ops = applied_content
         .iter()
         .rev()
@@ -516,6 +643,7 @@ fn apply_in_tx(
 
     Ok(ApplyResult {
         txn_id: Some(txn_id),
+        applied_ops,
         inverse_ops,
     })
 }
@@ -648,13 +776,15 @@ fn apply_single_op(tx: &Transaction<'_>, op: &Op, meta: &TxMeta, now: i64) -> Re
                 ensure_journal_day_available(tx, *id, *day, None)?;
             }
 
+            let id_rev = id.reversed_hex();
             tx.execute(
                 "INSERT INTO pages (
-                    id, title, title_lower, journal_day, document_mode,
+                    id, id_rev, title, title_lower, journal_day, document_mode,
                     created_at, updated_at, created_by, updated_by, deleted_at, version
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, 1)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, 1)",
                 params![
                     id.as_bytes().as_slice(),
+                    id_rev,
                     title,
                     title_lower,
                     journal_day,
@@ -793,13 +923,15 @@ fn apply_single_op(tx: &Transaction<'_>, op: &Op, meta: &TxMeta, now: i64) -> Re
                 }
             }
 
+            let id_rev = id.reversed_hex();
             tx.execute(
                 "INSERT INTO blocks (
-                    id, page_id, parent_id, order_key, content, collapsed,
+                    id, id_rev, page_id, parent_id, order_key, content, collapsed,
                     created_at, updated_at, created_by, updated_by, deleted_at, version
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9, NULL, 1)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, NULL, 1)",
                 params![
                     id.as_bytes().as_slice(),
+                    id_rev,
                     page_id.as_bytes().as_slice(),
                     parent_id.map(|p| p.as_bytes().to_vec()),
                     order_key,
@@ -1417,6 +1549,29 @@ fn row_to_txn_offset(row: &Row<'_>, offset: usize) -> rusqlite::Result<TxnRecord
         summary: row.get(offset + 5)?,
         undoes,
     })
+}
+
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+}
+
+fn suffix_rev_bounds(suffix: &str) -> (String, String) {
+    let rev: String = suffix.to_ascii_lowercase().chars().rev().collect();
+    let hi = format!("{rev}z");
+    (rev, hi)
+}
+
+fn collect_ids(
+    rows: rusqlite::MappedRows<'_, impl FnMut(&Row<'_>) -> rusqlite::Result<Vec<u8>>>,
+) -> Result<Vec<Id>> {
+    let mut out = Vec::new();
+    for row in rows {
+        let bytes = row?;
+        if let Some(id) = Id::from_slice(&bytes) {
+            out.push(id);
+        }
+    }
+    Ok(out)
 }
 
 fn now_millis() -> i64 {
