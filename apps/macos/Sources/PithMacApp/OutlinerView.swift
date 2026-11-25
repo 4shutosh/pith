@@ -1,3 +1,4 @@
+import AppKit
 import PithCore
 import PithMacCore
 import SwiftUI
@@ -42,10 +43,14 @@ struct OutlinerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader(
-                crumbs: [section, controller.pageTitle ?? ""],
-                trailing: controller.backlinks.isEmpty ? nil : "\(controller.backlinks.count) linked"
-            )
+            if controller.zoomedBlockId != nil {
+                ZoomHeader(controller: controller)
+            } else {
+                PanelHeader(
+                    crumbs: [section, controller.pageTitle ?? ""],
+                    trailing: controller.backlinks.isEmpty ? nil : "\(controller.backlinks.count) linked"
+                )
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     HStack(spacing: 0) {
@@ -118,6 +123,7 @@ struct OutlinerView: View {
                             isFocused: isFocused,
                             cursorOffset: isFocused ? controller.requestedCursorOffset : nil,
                             cursorSeq: isFocused ? controller.cursorRequestSeq : 0,
+                            completion: isFocused ? controller.completion : nil,
                             controller: controller
                         )
                         .id(row.id)
@@ -147,6 +153,7 @@ private struct OutlineRow: View {
     let isFocused: Bool
     let cursorOffset: Int?
     let cursorSeq: UInt64
+    let completion: CompletionState?
     let controller: OutlinerController
     @State private var isHovered = false
 
@@ -171,8 +178,8 @@ private struct OutlineRow: View {
                 cursorRequestSeq: cursorSeq,
                 onActivate: { controller.focusBlock(row.id, cursorOffset: $0) },
                 onOpenPage: { controller.openPage(id: $0) },
-                onTextChange: { text, composing in
-                    controller.updateDraft(blockId: row.id, text: text, isComposing: composing)
+                onTextChange: { text, composing, caret in
+                    controller.updateDraft(blockId: row.id, text: text, isComposing: composing, caret: caret)
                 },
                 onReturn: { controller.handleReturn(at: $0) },
                 onCycleTask: { controller.cycleTask(caret: $0) },
@@ -181,7 +188,19 @@ private struct OutlineRow: View {
                 onShiftTab: { controller.outdentFocusedBlock() },
                 onMoveUp: { controller.moveFocusUp(column: $0) },
                 onMoveDown: { controller.moveFocusDown(column: $0) },
-                onEscape: { controller.blurFocus() }
+                onEscape: { controller.blurFocus() },
+                completion: completion,
+                onCompletionMove: { controller.moveCompletion($0) },
+                onCompletionAccept: { controller.acceptCompletion(at: $0) },
+                onCompletionDismiss: { controller.dismissCompletion() },
+                onMoveBlock: { controller.moveFocusedBlock(up: $0, caret: $1) },
+                onToggleCollapse: { controller.toggleFocusedCollapse(caret: $0) },
+                onCopyMarkdown: {
+                    guard let markdown = controller.focusedBlockMarkdown() else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(markdown, forType: .string)
+                },
+                onPaste: { controller.paste($0, selectionStart: $1, selectionEnd: $2) }
             )
             .padding(.leading, 8)
         }
@@ -245,17 +264,24 @@ private struct OutlineRow: View {
             }
             .buttonStyle(.plain)
         } else {
-            ZStack {
-                if row.hasChildren && row.collapsed {
+            Button {
+                controller.zoom(into: row.id)
+            } label: {
+                ZStack {
+                    if row.hasChildren && row.collapsed {
+                        Circle()
+                            .fill(Theme.bullet.opacity(0.35))
+                            .frame(width: 14, height: 14)
+                    }
                     Circle()
-                        .fill(Theme.bullet.opacity(0.35))
-                        .frame(width: 14, height: 14)
+                        .fill(Theme.bullet)
+                        .frame(width: 5, height: 5)
                 }
-                Circle()
-                    .fill(Theme.bullet)
-                    .frame(width: 5, height: 5)
+                .frame(width: 18, height: BlockStyle.lineHeight)
+                .contentShape(Rectangle())
             }
-            .accessibilityLabel(row.hasChildren && row.collapsed ? "Collapsed block" : "Block")
+            .buttonStyle(.plain)
+            .accessibilityLabel(row.hasChildren && row.collapsed ? "Zoom into collapsed block" : "Zoom into block")
         }
     }
 }
@@ -331,6 +357,38 @@ private struct LinkedReferences: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+}
+
+private struct ZoomHeader: View {
+    @ObservedObject var controller: OutlinerController
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(controller.breadcrumb.enumerated()), id: \.offset) { index, crumb in
+                if index > 0 {
+                    Text("/").foregroundColor(Theme.bullet)
+                }
+                let isLast = index == controller.breadcrumb.count - 1
+                Button {
+                    controller.zoomOut(to: crumb)
+                } label: {
+                    Text(crumb.label)
+                        .foregroundColor(isLast ? Theme.textPrimary : Theme.textSecondary)
+                        .fontWeight(isLast ? .medium : .regular)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .disabled(isLast)
+            }
+            Spacer()
+        }
+        .font(Typography.ui(13))
+        .padding(.horizontal, 20)
+        .frame(height: 50)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.divider).frame(height: 1)
         }
     }
 }

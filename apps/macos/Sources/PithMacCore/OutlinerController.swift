@@ -1,4 +1,5 @@
 import Foundation
+import os
 import PithCore
 
 @MainActor
@@ -16,6 +17,9 @@ public final class OutlinerController: ObservableObject {
     @Published public var searchQuery: String = ""
     @Published public var searchHits: [FfiSearchHit] = []
     @Published public var isShowingAllPages: Bool = false
+    @Published public var zoomedBlockId: String?
+    @Published public var breadcrumb: [FfiCrumb] = []
+    @Published public var completion: CompletionState?
     @Published public var errorMessage: String?
 
     public let graph: PithGraph
@@ -31,6 +35,8 @@ public final class OutlinerController: ObservableObject {
     private var lastDataVersion: Int64 = 0
     private var isComposingIME: Bool = false
     private var debounceTask: Task<Void, Never>?
+    private var windowOffset: UInt64 = 0
+    private let signposter = OSSignposter(subsystem: "app.pith", category: "editor")
 
     public init(graph: PithGraph, actor: String = "me") throws {
         self.graph = graph
@@ -41,6 +47,9 @@ public final class OutlinerController: ObservableObject {
     }
 
     public var pageTitle: String? {
+        if zoomedBlockId != nil, let last = breadcrumb.last {
+            return last.label
+        }
         if let id = selectedPageId {
             return pages.first(where: { $0.id == id })?.title
         }
@@ -74,7 +83,14 @@ public final class OutlinerController: ObservableObject {
                 errorMessage = nil
                 return
             }
-            let window = try graph.readPageWindow(pageId: pageId, offset: 0, limit: pageWindowLimit)
+            let window: FfiPageWindow
+            if let zoomed = zoomedBlockId {
+                window = try graph.readBlockWindow(blockId: zoomed, offset: 0, limit: pageWindowLimit)
+                breadcrumb = try graph.blockBreadcrumb(blockId: zoomed)
+            } else {
+                window = try graph.readPageWindow(pageId: pageId, offset: windowOffset, limit: pageWindowLimit)
+                breadcrumb = []
+            }
             rows = window.rows
             totalVisible = window.totalVisible
             backlinks = try graph.backlinks(targetId: pageId)
@@ -90,6 +106,8 @@ public final class OutlinerController: ObservableObject {
     public func selectPage(_ pageId: String) {
         leaveBlock()
         isShowingAllPages = false
+        zoomedBlockId = nil
+        windowOffset = 0
         pendingJournalTitle = nil
         selectedPageId = pageId
         reload()
@@ -98,6 +116,8 @@ public final class OutlinerController: ObservableObject {
     public func openTodayJournal() {
         leaveBlock()
         isShowingAllPages = false
+        zoomedBlockId = nil
+        windowOffset = 0
         do {
             try showTodayJournal()
         } catch {
@@ -134,6 +154,8 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func focusBlock(_ blockId: String, cursorOffset: Int? = nil) {
+        let interval = signposter.beginInterval("focus")
+        defer { signposter.endInterval("focus", interval) }
         if focusedBlockId != blockId {
             leaveBlock()
             guard let row = rows.first(where: { $0.id == blockId }) else { return }
@@ -164,10 +186,13 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
-    public func updateDraft(blockId: String, text: String, isComposing: Bool) {
+    public func updateDraft(blockId: String, text: String, isComposing: Bool, caret: Int? = nil) {
         guard focusedBlockId == blockId else { return }
         draftText = text
         isComposingIME = isComposing
+        if let caret, !isComposing {
+            updateCompletion(caret: caret)
+        }
         debounceTask?.cancel()
         guard !isComposing else { return }
         let delay = debounceNanoseconds
@@ -184,6 +209,8 @@ public final class OutlinerController: ObservableObject {
         debounceTask?.cancel()
         debounceTask = nil
         guard !isComposingIME, let blockId = focusedBlockId, isDirty else { return }
+        let interval = signposter.beginInterval("save")
+        defer { signposter.endInterval("save", interval) }
         do {
             let result = try graph.applyOps(
                 ops: [.updateBlock(id: blockId, content: editPrefix + draftText, expectedVersion: draftBaseVersion)],
@@ -340,9 +367,142 @@ public final class OutlinerController: ObservableObject {
             selectPage(pageId)
         case let .block(blockId, pageId, _, _, _, cursor, _):
             selectPage(pageId)
+            run {
+                let index = try graph.revealBlock(blockId: blockId, meta: meta("reveal block"))
+                if index >= windowOffset + pageWindowLimit {
+                    windowOffset = index - pageWindowLimit / 2
+                }
+                reload()
+            }
             guard let row = rows.first(where: { $0.id == blockId }) else { return }
             focusBlock(blockId, cursorOffset: editOffset(fromRendered: Int(cursor), in: row))
         }
+    }
+
+    public func zoom(into blockId: String) {
+        leaveBlock()
+        zoomedBlockId = blockId
+        reload()
+    }
+
+    public func zoomOut(to crumb: FfiCrumb) {
+        leaveBlock()
+        zoomedBlockId = crumb.blockId
+        reload()
+    }
+
+    public func moveFocusedBlock(up: Bool, caret: Int) {
+        guard let blockId = focusedBlockId else { return }
+        flushDraft()
+        let caretFromEnd = TextOffsets.length(draftText) - caret
+        run {
+            let outcome = up
+                ? try graph.moveBlockUp(blockId: blockId, baseVersion: draftBaseVersion, meta: meta("move block up"))
+                : try graph.moveBlockDown(blockId: blockId, baseVersion: draftBaseVersion, meta: meta("move block down"))
+            if outcome != nil {
+                refreshFocused(caretFromEnd: caretFromEnd)
+            }
+        }
+    }
+
+    public func toggleFocusedCollapse(caret: Int) {
+        guard let blockId = focusedBlockId, let row = rows.first(where: { $0.id == blockId }), row.hasChildren else { return }
+        flushDraft()
+        let caretFromEnd = TextOffsets.length(draftText) - caret
+        run {
+            _ = try graph.applyOps(
+                ops: [.setCollapsed(id: blockId, collapsed: !row.collapsed)],
+                meta: meta("toggle collapse")
+            )
+            refreshFocused(caretFromEnd: caretFromEnd)
+        }
+    }
+
+    public func paste(_ pasted: String, selectionStart: Int, selectionEnd: Int) -> Bool {
+        guard let blockId = focusedBlockId else { return false }
+        cancelPendingSave()
+        let (before, rest) = TextOffsets.split(draftText, atScalar: selectionStart)
+        let (_, after) = TextOffsets.split(rest, atScalar: selectionEnd - selectionStart)
+        var handled = false
+        run {
+            guard let outcome = try graph.pasteText(
+                blockId: blockId,
+                baseVersion: draftBaseVersion,
+                before: editPrefix + before,
+                after: after,
+                pasted: pasted,
+                meta: meta("paste")
+            ) else { return }
+            handled = true
+            apply(outcome)
+        }
+        return handled
+    }
+
+    public func focusedBlockMarkdown() -> String? {
+        guard let blockId = focusedBlockId else { return nil }
+        flushDraft()
+        var markdown: String?
+        run { markdown = try graph.subtreeMarkdown(blockId: blockId) }
+        return markdown
+    }
+
+    public func moveCompletion(_ delta: Int) {
+        guard var state = completion, !state.items.isEmpty else { return }
+        state.selected = (state.selected + delta + state.items.count) % state.items.count
+        completion = state
+    }
+
+    public func acceptCompletion(at index: Int? = nil) {
+        guard let state = completion else { return }
+        let chosen = index ?? state.selected
+        guard state.items.indices.contains(chosen) else { return }
+        let edit = applyCompletion(text: draftText, context: state.context, value: state.items[chosen].value)
+        completion = nil
+        draftText = edit.text
+        requestCursor(Int(edit.caret))
+        flushDraft()
+    }
+
+    public func dismissCompletion() {
+        completion = nil
+    }
+
+    private func updateCompletion(caret: Int) {
+        guard let context = completionContext(text: draftText, caret: UInt32(caret)) else {
+            completion = nil
+            return
+        }
+        let interval = signposter.beginInterval("completion")
+        defer { signposter.endInterval("completion", interval) }
+        var items: [CompletionItem] = []
+        switch context.kind {
+        case .page, .tag:
+            let pages = (try? graph.suggestPages(query: context.query, limit: 8)) ?? []
+            items = pages.map { CompletionItem(label: $0.title, detail: nil, value: $0.title, isNew: false) }
+            let query = context.query.trimmingCharacters(in: .whitespaces)
+            if !query.isEmpty, !pages.contains(where: { $0.title.caseInsensitiveCompare(query) == .orderedSame }) {
+                items.append(CompletionItem(label: query, detail: "New page", value: query, isNew: true))
+            }
+        case .block:
+            guard context.query.count >= 3 else {
+                completion = nil
+                return
+            }
+            let hits = (try? graph.search(query: context.query, limit: 20)) ?? []
+            items = hits.compactMap { hit in
+                guard case let .block(blockId, _, _, breadcrumb, snippet, _, _) = hit, blockId != focusedBlockId else {
+                    return nil
+                }
+                return CompletionItem(
+                    label: snippet.map(\.text).joined(),
+                    detail: SearchPresentation.breadcrumb(breadcrumb),
+                    value: blockId,
+                    isNew: false
+                )
+            }
+        }
+        completion = items.isEmpty ? nil : CompletionState(context: context, items: items, selected: 0)
     }
 
     public func pollExternalChanges() {
@@ -387,6 +547,7 @@ public final class OutlinerController: ObservableObject {
 
     private func endEditing() {
         cancelPendingSave()
+        completion = nil
         focusedBlockId = nil
         draftText = ""
     }

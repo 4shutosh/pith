@@ -7,14 +7,66 @@ final class PithTextView: NSTextView {
     var onActivate: ((Int) -> Void)?
     var onOpenPage: ((String) -> Void)?
     var onCommandReturn: ((Int) -> Void)?
+    var onMoveBlock: ((Bool, Int) -> Void)?
+    var onToggleCollapse: ((Int) -> Void)?
+    var onCopyMarkdown: (() -> Void)?
+    var onPaste: ((String, Int, Int) -> Bool)?
+
+    private var caret: Int {
+        TextOffsets.scalar(fromUTF16: selectedRange().location, in: string)
+    }
 
     override func keyDown(with event: NSEvent) {
-        let isReturn = event.keyCode == 36 || event.keyCode == 76
-        if isEditable, isReturn, event.modifierFlags.contains(.command), !hasMarkedText() {
-            onCommandReturn?(TextOffsets.scalar(fromUTF16: selectedRange().location, in: string))
+        guard isEditable, !hasMarkedText() else {
+            super.keyDown(with: event)
             return
         }
-        super.keyDown(with: event)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        switch (event.keyCode, flags) {
+        case (36, .command), (76, .command):
+            onCommandReturn?(caret)
+        case (126, [.option]), (126, [.option, .numericPad, .function]):
+            onMoveBlock?(true, caret)
+        case (125, [.option]), (125, [.option, .numericPad, .function]):
+            onMoveBlock?(false, caret)
+        case (_, .command) where key == ".":
+            onToggleCollapse?(caret)
+        case (_, [.command, .shift]) where key == "c":
+            onCopyMarkdown?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    override func paste(_ sender: Any?) {
+        guard isEditable,
+              let pasted = NSPasteboard.general.string(forType: .string),
+              pasted.contains("\n") else {
+            super.paste(sender)
+            return
+        }
+        let selection = selectedRange()
+        let start = TextOffsets.scalar(fromUTF16: selection.location, in: string)
+        let end = TextOffsets.scalar(fromUTF16: selection.location + selection.length, in: string)
+        if onPaste?(pasted, start, end) != true {
+            super.paste(sender)
+        }
+    }
+
+    func caretRectInView() -> NSRect {
+        guard let layout = layoutManager, let container = textContainer else { return .zero }
+        let length = (string as NSString).length
+        let location = min(selectedRange().location, length)
+        let glyphRange = layout.glyphRange(forCharacterRange: NSRange(location: location, length: 0), actualCharacterRange: nil)
+        var rect = layout.boundingRect(forGlyphRange: glyphRange, in: container)
+        if length == 0 || location >= length, !layout.extraLineFragmentRect.isEmpty, string.hasSuffix("\n") || length == 0 {
+            rect = layout.extraLineFragmentRect
+        }
+        rect.origin.x += textContainerOrigin.x
+        rect.origin.y += textContainerOrigin.y
+        rect.size.width = max(rect.size.width, 1)
+        return rect
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -107,7 +159,7 @@ struct BlockTextView: NSViewRepresentable {
     let cursorRequestSeq: UInt64
     let onActivate: (Int) -> Void
     let onOpenPage: (String) -> Void
-    let onTextChange: (String, Bool) -> Void
+    let onTextChange: (String, Bool, Int) -> Void
     let onReturn: (Int) -> Void
     let onCycleTask: (Int) -> Void
     let onBackspaceAtStart: () -> Void
@@ -116,6 +168,14 @@ struct BlockTextView: NSViewRepresentable {
     let onMoveUp: (Int) -> Void
     let onMoveDown: (Int) -> Void
     let onEscape: () -> Void
+    var completion: CompletionState? = nil
+    var onCompletionMove: (Int) -> Void = { _ in }
+    var onCompletionAccept: (Int?) -> Void = { _ in }
+    var onCompletionDismiss: () -> Void = {}
+    var onMoveBlock: (Bool, Int) -> Void = { _, _ in }
+    var onToggleCollapse: (Int) -> Void = { _ in }
+    var onCopyMarkdown: () -> Void = {}
+    var onPaste: (String, Int, Int) -> Bool = { _, _, _ in false }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -165,6 +225,10 @@ struct BlockTextView: NSViewRepresentable {
         }
         textView.onOpenPage = onOpenPage
         textView.onCommandReturn = onCycleTask
+        textView.onMoveBlock = onMoveBlock
+        textView.onToggleCollapse = onToggleCollapse
+        textView.onCopyMarkdown = onCopyMarkdown
+        textView.onPaste = onPaste
 
         if isEditing {
             let startedEditing = !textView.isEditable
@@ -190,9 +254,13 @@ struct BlockTextView: NSViewRepresentable {
                         textView.window?.makeFirstResponder(textView)
                     }
                     coordinator.applyCursor(textView: textView)
+                    coordinator.updatePopover(textView: textView)
                 }
+            } else {
+                coordinator.updatePopover(textView: textView)
             }
         } else {
+            context.coordinator.closePopover()
             if textView.isEditable {
                 textView.isEditable = false
                 textView.isSelectable = false
@@ -210,6 +278,39 @@ struct BlockTextView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: BlockTextView
         var lastAppliedCursorSeq: UInt64 = 0
+        private var popover: NSPopover?
+        private var pendingPairCheck = false
+
+        func updatePopover(textView: PithTextView) {
+            guard let state = parent.completion else {
+                closePopover()
+                return
+            }
+            let list = CompletionList(state: state, onPick: { [weak self] index in self?.parent.onCompletionAccept(index) })
+            if let popover, popover.isShown, let host = popover.contentViewController as? NSHostingController<CompletionList> {
+                host.rootView = list
+                popover.positioningRect = textView.caretRectInView()
+                return
+            }
+            let popover = NSPopover()
+            popover.behavior = .applicationDefined
+            popover.animates = false
+            popover.appearance = NSAppearance(named: .darkAqua)
+            popover.contentViewController = NSHostingController(rootView: list)
+            popover.show(relativeTo: textView.caretRectInView(), of: textView, preferredEdge: .maxY)
+            self.popover = popover
+            textView.window?.makeFirstResponder(textView)
+        }
+
+        func closePopover() {
+            popover?.performClose(nil)
+            popover = nil
+        }
+
+        func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+            pendingPairCheck = replacementString == "[" || replacementString == "("
+            return true
+        }
 
         init(_ parent: BlockTextView) {
             self.parent = parent
@@ -231,15 +332,44 @@ struct BlockTextView: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView, textView.isEditable else { return }
+            if pendingPairCheck, !textView.hasMarkedText() {
+                pendingPairCheck = false
+                let location = textView.selectedRange().location
+                let caret = TextOffsets.scalar(fromUTF16: location, in: textView.string)
+                if let paired = autoPair(text: textView.string, caret: UInt32(caret)) {
+                    textView.textStorage?.setAttributedString(NSAttributedString(string: paired, attributes: BlockStyle.editingAttributes))
+                    textView.setSelectedRange(NSRange(location: location, length: 0))
+                }
+            }
             highlight(textView)
             parent.text = textView.string
-            parent.onTextChange(textView.string, textView.hasMarkedText())
+            let caret = TextOffsets.scalar(fromUTF16: textView.selectedRange().location, in: textView.string)
+            parent.onTextChange(textView.string, textView.hasMarkedText(), caret)
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             guard let view = textView as? PithTextView, !view.hasMarkedText() else { return false }
             let caret = TextOffsets.scalar(fromUTF16: view.selectedRange().location, in: view.string)
             let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+
+            if parent.completion != nil {
+                switch commandSelector {
+                case #selector(NSResponder.moveUp(_:)):
+                    parent.onCompletionMove(-1)
+                    return true
+                case #selector(NSResponder.moveDown(_:)):
+                    parent.onCompletionMove(1)
+                    return true
+                case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+                    parent.onCompletionAccept(nil)
+                    return true
+                case #selector(NSResponder.cancelOperation(_:)):
+                    parent.onCompletionDismiss()
+                    return true
+                default:
+                    break
+                }
+            }
 
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
