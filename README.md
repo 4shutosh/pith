@@ -44,7 +44,7 @@ An open-source, local-first, **agent-native outliner** built for speed.
 - **Editor:** One live text field per active block; inactive blocks render as styled text with native cursor/focus navigation across blocks.
 - **Sync (planned):** Offline-first multi-device sync with a self-hostable server. The sync model (CRDT relay vs. server rebase) is still open — see [ARCHITECTURE §6](docs/ARCHITECTURE.md#6-sync).
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design. To build and run it, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ---
 
