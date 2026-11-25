@@ -1,0 +1,22 @@
+[package]
+name = "pith-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+name = "pith_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+
+[dependencies]
+pith-core = { path = "../core" }
+thiserror.workspace = true
+uniffi = { workspace = true, features = ["cli"] }
+uuid.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true

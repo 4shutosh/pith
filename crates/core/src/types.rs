@@ -148,3 +148,44 @@ pub struct PropRecord {
     pub value: String,
     pub value_ref: Option<Id>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlatBlockRow {
+    pub id: Id,
+    pub page_id: Id,
+    pub parent_id: Option<Id>,
+    pub order_key: String,
+    pub depth: u32,
+    pub raw_content: String,
+    pub rendered_content: String,
+    pub collapsed: bool,
+    pub has_children: bool,
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageWindow {
+    pub page: Page,
+    pub total_visible: u64,
+    pub offset: u64,
+    pub rows: Vec<FlatBlockRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeEntry {
+    pub seq: i64,
+    pub txn_id: Id,
+    pub ts: i64,
+    pub origin: Origin,
+    pub actor: String,
+    pub summary: String,
+    pub undoes: Option<Id>,
+    pub touched_ids: Vec<Id>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeFeed {
+    pub data_version: i64,
+    pub latest_seq: i64,
+    pub entries: Vec<ChangeEntry>,
+}

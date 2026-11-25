@@ -110,6 +110,7 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
 **Undo** applies the `inverse` ops of txn T as a new txn with `origin=undo, undoes=T`. Its checks and its write run in one `BEGIN IMMEDIATE` transaction, so two processes can't both undo T. Only undo can create `origin=undo` txns; `apply_ops` rejects that origin from callers.
 
 - T can't be undone while it is undone. Undoing the undo txn is redo, after which T can be undone again. "Undone" is derived from the append-only `undoes` chain; history rows are never mutated.
+- Undo/redo stacks are per actor and derived from the log. "Undo last" reverts the actor's newest edit that isn't undone. "Redo last" re-applies the actor's newest undo made after their last edit; a new edit clears redo. Picking the target and applying it happen in one transaction.
 - Undo reports a conflict (`--force` overrides) instead of clobbering when:
   - a later txn by a *different* actor touched any block T touched, or
   - a restored page's title is now taken by another page.

@@ -11,7 +11,8 @@ use crate::ops::Op;
 use crate::parser;
 use crate::schema::configure_and_migrate;
 use crate::types::{
-    ApplyResult, Backlink, Block, OpRecord, Origin, Page, PropRecord, SearchHit, TxMeta, TxnRecord,
+    ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, FlatBlockRow, OpRecord, Origin, Page,
+    PageWindow, PropRecord, SearchHit, TxMeta, TxnRecord,
 };
 
 pub struct Store {
@@ -107,34 +108,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-
-        let (target_seq, target_txn) = fetch_txn_with_seq(&tx, txn_id)?;
-        if txn_is_undone(&tx, txn_id)? {
-            return Err(Error::AlreadyUndone(txn_id));
-        }
-        if !force {
-            ensure_no_later_foreign_edits(&tx, txn_id, target_seq, &target_txn.actor)?;
-        }
-
-        let inverse_ops: Vec<Op> = fetch_txn_ops(&tx, txn_id)?
-            .into_iter()
-            .rev()
-            .flat_map(|record| record.inverse)
-            .collect();
-
-        let undo_meta = TxMeta {
-            origin: Origin::Undo,
-            actor: meta.actor.clone(),
-            session: meta.session.clone(),
-            summary: if meta.summary.is_empty() {
-                format!("undo {txn_id}")
-            } else {
-                meta.summary.clone()
-            },
-        };
-
-        let result = apply_in_tx(&tx, &inverse_ops, &undo_meta, Some(txn_id))
-            .map_err(|err| as_undo_conflict(txn_id, err))?;
+        let result = undo_in_tx(&tx, txn_id, meta, force)?;
         if !dry_run {
             tx.commit()?;
         }
@@ -450,6 +424,155 @@ impl Store {
         derive::rebuild_all(&mut self.conn)
     }
 
+    pub fn read_page_window(&self, page_id: Id, offset: u64, limit: u64) -> Result<PageWindow> {
+        let page = self.get_page(page_id)?.ok_or(Error::NotFound(page_id))?;
+        if page.deleted_at.is_some() {
+            return Err(Error::DeletedEntity(page_id));
+        }
+
+        let live_blocks = self.list_live_blocks(page_id)?;
+        let mut by_parent: HashMap<Option<Id>, Vec<&Block>> = HashMap::new();
+        for block in &live_blocks {
+            by_parent.entry(block.parent_id).or_default().push(block);
+        }
+
+        let mut visible: Vec<(&Block, u32, bool)> = Vec::new();
+        let mut stack: Vec<(&Block, u32)> = Vec::new();
+        if let Some(roots) = by_parent.get(&None) {
+            for &root in roots.iter().rev() {
+                stack.push((root, 0));
+            }
+        }
+
+        while let Some((block, depth)) = stack.pop() {
+            let children = by_parent.get(&Some(block.id));
+            let has_children = children.is_some_and(|c| !c.is_empty());
+            visible.push((block, depth, has_children));
+            if !block.collapsed
+                && let Some(kids) = children
+            {
+                for &child in kids.iter().rev() {
+                    stack.push((child, depth + 1));
+                }
+            }
+        }
+
+        let total_visible = visible.len() as u64;
+        let start = (offset as usize).min(visible.len());
+        let end = start.saturating_add(limit as usize).min(visible.len());
+        let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+        let mut rows = Vec::with_capacity(end - start);
+
+        for &(block, depth, has_children) in &visible[start..end] {
+            let rendered =
+                derive::render_content_with_cache(&self.conn, &mut title_cache, &block.content)?;
+            rows.push(FlatBlockRow {
+                id: block.id,
+                page_id: block.page_id,
+                parent_id: block.parent_id,
+                order_key: block.order_key.clone(),
+                depth,
+                raw_content: block.content.clone(),
+                rendered_content: rendered,
+                collapsed: block.collapsed,
+                has_children,
+                version: block.version,
+            });
+        }
+
+        Ok(PageWindow {
+            page,
+            total_visible,
+            offset: start as u64,
+            rows,
+        })
+    }
+
+    pub fn data_version(&self) -> Result<i64> {
+        self.conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .map_err(Error::from)
+    }
+
+    pub fn latest_txn_seq(&self) -> Result<i64> {
+        self.conn
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM txns", [], |row| {
+                row.get(0)
+            })
+            .map_err(Error::from)
+    }
+
+    pub fn changes_since(&self, after_seq: i64, limit: usize) -> Result<ChangeFeed> {
+        let data_version = self.data_version()?;
+        let latest_seq = self.latest_txn_seq()?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT seq, id, ts, origin, actor, session, summary, undoes
+             FROM txns
+             WHERE seq > ?1
+             ORDER BY seq ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![after_seq, limit as i64], |row| {
+            let seq: i64 = row.get(0)?;
+            let txn = row_to_txn_offset(row, 1)?;
+            Ok((seq, txn))
+        })?;
+
+        let mut entries = Vec::new();
+        let mut touched_stmt = self
+            .conn
+            .prepare_cached("SELECT block_id FROM txn_blocks WHERE txn_id = ?1")?;
+
+        for row in rows {
+            let (seq, txn) = row?;
+            let touched_ids = collect_ids(
+                touched_stmt.query_map(params![txn.id.as_bytes().as_slice()], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })?,
+            )?;
+            entries.push(ChangeEntry {
+                seq,
+                txn_id: txn.id,
+                ts: txn.ts,
+                origin: txn.origin,
+                actor: txn.actor,
+                summary: txn.summary,
+                undoes: txn.undoes,
+                touched_ids,
+            });
+        }
+
+        Ok(ChangeFeed {
+            data_version,
+            latest_seq,
+            entries,
+        })
+    }
+
+    pub fn undo_last(&mut self, meta: &TxMeta, force: bool) -> Result<Option<ApplyResult>> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(target) = latest_undoable_edit(&tx, &meta.actor)? else {
+            return Ok(None);
+        };
+        let result = undo_in_tx(&tx, target, meta, force)?;
+        tx.commit()?;
+        Ok(Some(result))
+    }
+
+    pub fn redo_last(&mut self, meta: &TxMeta, force: bool) -> Result<Option<ApplyResult>> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(target) = latest_redoable_undo(&tx, &meta.actor)? else {
+            return Ok(None);
+        };
+        let result = undo_in_tx(&tx, target, meta, force)?;
+        tx.commit()?;
+        Ok(Some(result))
+    }
+
     pub fn check_invariants(&self) -> Result<()> {
         verify_invariants_conn(&self.conn)?;
         verify_id_rev(&self.conn)?;
@@ -646,6 +769,75 @@ fn apply_in_tx(
         applied_ops,
         inverse_ops,
     })
+}
+
+fn undo_in_tx(tx: &Transaction<'_>, txn_id: Id, meta: &TxMeta, force: bool) -> Result<ApplyResult> {
+    let (target_seq, target_txn) = fetch_txn_with_seq(tx, txn_id)?;
+    if txn_is_undone(tx, txn_id)? {
+        return Err(Error::AlreadyUndone(txn_id));
+    }
+    if !force {
+        ensure_no_later_foreign_edits(tx, txn_id, target_seq, &target_txn.actor)?;
+    }
+
+    let inverse_ops: Vec<Op> = fetch_txn_ops(tx, txn_id)?
+        .into_iter()
+        .rev()
+        .flat_map(|record| record.inverse)
+        .collect();
+
+    let undo_meta = TxMeta {
+        origin: Origin::Undo,
+        actor: meta.actor.clone(),
+        session: meta.session.clone(),
+        summary: if meta.summary.is_empty() {
+            format!("undo {txn_id}")
+        } else {
+            meta.summary.clone()
+        },
+    };
+
+    apply_in_tx(tx, &inverse_ops, &undo_meta, Some(txn_id))
+        .map_err(|err| as_undo_conflict(txn_id, err))
+}
+
+fn latest_undoable_edit(conn: &Connection, actor: &str) -> Result<Option<Id>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM txns
+         WHERE actor = ?1 AND origin != 'undo'
+         ORDER BY seq DESC",
+    )?;
+    for id in collect_ids(stmt.query_map(params![actor], |r| r.get::<_, Vec<u8>>(0))?)? {
+        if !txn_is_undone(conn, id)? {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+fn latest_redoable_undo(conn: &Connection, actor: &str) -> Result<Option<Id>> {
+    let last_edit_seq: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM txns WHERE actor = ?1 AND origin != 'undo'",
+        params![actor],
+        |r| r.get(0),
+    )?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT u.id FROM txns u
+         JOIN txns target ON target.id = u.undoes
+         WHERE u.actor = ?1
+           AND u.origin = 'undo'
+           AND target.origin != 'undo'
+           AND u.seq > ?2
+         ORDER BY u.seq DESC",
+    )?;
+    for id in
+        collect_ids(stmt.query_map(params![actor, last_edit_seq], |r| r.get::<_, Vec<u8>>(0))?)?
+    {
+        if !txn_is_undone(conn, id)? {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
 }
 
 fn as_undo_conflict(txn_id: Id, err: Error) -> Error {

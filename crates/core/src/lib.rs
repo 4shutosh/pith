@@ -19,5 +19,6 @@ pub use id::Id;
 pub use ops::Op;
 pub use store::{LiveBlockState, LivePageState, LiveSnapshot, Store};
 pub use types::{
-    ApplyResult, Backlink, Block, OpRecord, Origin, Page, PropRecord, SearchHit, TxMeta, TxnRecord,
+    ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, FlatBlockRow, OpRecord, Origin, Page,
+    PageWindow, PropRecord, SearchHit, TxMeta, TxnRecord,
 };
