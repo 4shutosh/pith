@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e500a6e64d7c7c27c40e36af2127277a660b61cf2e8ca81fc3297247c0c0c58b # shrinks to steps = [Apply(CreatePage { title_idx: 0, doc_mode: false }), Undo { txn_idx: 0, force: false }]
