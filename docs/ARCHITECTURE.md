@@ -70,6 +70,8 @@ txn_blocks (txn_id BLOB, block_id BLOB)   -- which blocks/pages each txn touched
   - Tombstoning a block removes them.
   - Restoring it re-derives them.
 
+Tags are `#name` or `#[[any name]]`. A bare `#name` must follow whitespace, an opening bracket or quote, or the start of a line, and runs until whitespace or punctuation (including Unicode quotes and CJK punctuation); letters and marks from any script belong to the tag.
+
 Properties are intentionally simple: `key:: value`, and values may be refs. There are no typed property entities, closed value sets or class hierarchies. The schema can grow into them without changing D2.
 
 ---

@@ -144,12 +144,12 @@ pub fn tokenize(content: &str) -> Vec<Span<'_>> {
             continue;
         }
 
-        if bytes[i] == b'#' && is_tag_boundary(bytes, i) {
+        if bytes[i] == b'#' && is_tag_boundary(content, i) {
             let start = i + 1;
-            let mut end = start;
-            while end < len && is_simple_tag_char(bytes[end]) {
-                end += 1;
-            }
+            let end = content[start..]
+                .char_indices()
+                .find(|&(_, ch)| !is_tag_char(ch))
+                .map_or(len, |(offset, _)| start + offset);
             if end > start {
                 push_text(&mut out, &content[text_start..i]);
                 let tag = &content[start..end];
@@ -361,7 +361,7 @@ where
             Span::BracketTag { raw, target } | Span::SimpleTag { raw, target } => match target {
                 RefTarget::Id(id) => match lookup(id)? {
                     Some(title) => {
-                        if title.bytes().all(is_simple_tag_char) && !title.is_empty() {
+                        if !title.is_empty() && title.chars().all(is_tag_char) {
                             out.push('#');
                             out.push_str(&title);
                         } else {
@@ -553,14 +553,22 @@ fn scan_delimited(text: &str, start: usize, close1: u8, close2: u8) -> Option<(&
     None
 }
 
-fn is_tag_boundary(bytes: &[u8], hash_idx: usize) -> bool {
-    if hash_idx == 0 {
-        return true;
+const TAG_DELIMITERS: &[char] = &[
+    ',', '.', '!', '?', ';', ':', '"', '\'', '`', '(', ')', '[', ']', '{', '}', '<', '>', '#', '*',
+    '~', '^', '=', '|', '‘', '’', '“', '”', '«', '»', '。', '、', '，', '！', '？', '：', '；',
+];
+
+const TAG_OPENERS: &[char] = &[
+    '(', '[', '{', ',', ';', ':', '"', '\'', '“', '‘', '«', '「', '（',
+];
+
+fn is_tag_boundary(content: &str, hash_idx: usize) -> bool {
+    match content[..hash_idx].chars().next_back() {
+        None => true,
+        Some(prev) => prev.is_whitespace() || TAG_OPENERS.contains(&prev),
     }
-    let prev = bytes[hash_idx - 1];
-    prev.is_ascii_whitespace() || matches!(prev, b'(' | b'[' | b',' | b';' | b':')
 }
 
-fn is_simple_tag_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'/')
+fn is_tag_char(ch: char) -> bool {
+    !ch.is_whitespace() && !TAG_DELIMITERS.contains(&ch)
 }
