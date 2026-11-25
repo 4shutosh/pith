@@ -3,6 +3,7 @@ use crate::id::Id;
 use crate::journal::resolve_journal_date;
 use crate::ops::Op;
 use crate::order;
+use crate::parser;
 use crate::store::Store;
 use crate::types::{Block, EditOutcome, TxMeta};
 
@@ -185,6 +186,48 @@ impl Store {
         }))
     }
 
+    pub fn cycle_task(&mut self, id: Id, base_version: i64, meta: &TxMeta) -> Result<EditOutcome> {
+        self.set_task_state_with(id, base_version, meta, next_task_state)
+    }
+
+    pub fn toggle_task_done(
+        &mut self,
+        id: Id,
+        base_version: i64,
+        meta: &TxMeta,
+    ) -> Result<EditOutcome> {
+        self.set_task_state_with(id, base_version, meta, |current| match current {
+            Some("DONE") => Some("TODO"),
+            _ => Some("DONE"),
+        })
+    }
+
+    fn set_task_state_with(
+        &mut self,
+        id: Id,
+        base_version: i64,
+        meta: &TxMeta,
+        next: impl Fn(Option<&str>) -> Option<&'static str>,
+    ) -> Result<EditOutcome> {
+        let block = self.live_block(id)?;
+        let rendered = self.render_content(&block.content)?;
+        let current = parser::parse_task_state(&rendered);
+        let content = parser::set_task_state_in_content(&rendered, next(current.as_deref()));
+        let result = self.apply_ops(
+            &[Op::UpdateBlock {
+                id,
+                content,
+                expected_version: Some(base_version),
+            }],
+            meta,
+        )?;
+        Ok(EditOutcome {
+            result,
+            focus_block: id,
+            cursor: None,
+        })
+    }
+
     fn append_root_block(
         &mut self,
         page_id: Id,
@@ -231,4 +274,14 @@ fn sibling_position(siblings: &[Block], id: Id) -> Result<usize> {
 fn sibling_after(siblings: &[Block], id: Id) -> Result<Option<String>> {
     let position = sibling_position(siblings, id)?;
     Ok(siblings.get(position + 1).map(|b| b.order_key.clone()))
+}
+
+pub fn next_task_state(current: Option<&str>) -> Option<&'static str> {
+    match current {
+        None => Some("TODO"),
+        Some("TODO") => Some("DOING"),
+        Some("DOING") | Some("NOW") => Some("DONE"),
+        Some("DONE") => None,
+        Some(_) => Some("TODO"),
+    }
 }

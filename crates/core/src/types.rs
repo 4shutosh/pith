@@ -157,10 +157,37 @@ pub struct Backlink {
 pub enum RenderedSpan {
     Text(String),
     Code(String),
-    Task(String),
-    PageLink { page_id: Option<Id>, title: String },
-    Tag { page_id: Option<Id>, title: String },
-    BlockRef { block_id: Id, text: String },
+    Task {
+        state: String,
+        source: String,
+    },
+    PageLink {
+        page_id: Option<Id>,
+        title: String,
+        source: String,
+    },
+    Tag {
+        page_id: Option<Id>,
+        title: String,
+        source: String,
+    },
+    BlockRef {
+        block_id: Id,
+        text: String,
+        source: String,
+    },
+}
+
+impl RenderedSpan {
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Text(text) | Self::Code(text) => text,
+            Self::Task { source, .. }
+            | Self::PageLink { source, .. }
+            | Self::Tag { source, .. }
+            | Self::BlockRef { source, .. } => source,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

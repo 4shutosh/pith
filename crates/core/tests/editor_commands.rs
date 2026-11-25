@@ -230,20 +230,34 @@ fn rows_carry_rendered_spans_from_the_core_tokenizer() -> Result<()> {
     let window = f.store.read_page_window(f.page, 0, 10)?;
     let spans = &window.rows[1].spans;
 
-    assert_eq!(spans[0], RenderedSpan::Task("TODO".to_string()));
+    assert_eq!(
+        spans[0],
+        RenderedSpan::Task {
+            state: "TODO".to_string(),
+            source: "TODO".to_string(),
+        }
+    );
     assert!(spans.contains(&RenderedSpan::PageLink {
         page_id: Some(habits.id),
         title: "Atomic Habits".to_string(),
+        source: "[[Atomic Habits]]".to_string(),
     }));
     assert!(spans.contains(&RenderedSpan::Tag {
         page_id: Some(books.id),
         title: "books".to_string(),
+        source: "#books".to_string(),
     }));
     assert!(spans.contains(&RenderedSpan::Code("`[[not-a-link]]`".to_string())));
     assert!(spans.contains(&RenderedSpan::BlockRef {
         block_id: target,
         text: "Referenced block".to_string(),
+        source: format!("(({target}))"),
     }));
+    let joined: String = spans.iter().map(RenderedSpan::source).collect();
+    assert_eq!(
+        joined,
+        format!("TODO read [[Atomic Habits]] #books `[[not-a-link]]` (({target}))")
+    );
     Ok(())
 }
 
@@ -273,4 +287,84 @@ fn a_version_1_database_migrates_and_supports_undo_groups() -> Result<()> {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
     result
+}
+
+#[test]
+fn multi_word_tags_keep_their_bracket_form_as_source() -> Result<()> {
+    let mut f = Fixture::new()?;
+    f.block(None, None, "  DONE ship #[[Release Plan]] today")?;
+    let spans = f.store.read_page_window(f.page, 0, 10)?.rows[0]
+        .spans
+        .clone();
+
+    assert_eq!(
+        spans[0],
+        RenderedSpan::Task {
+            state: "DONE".to_string(),
+            source: "  DONE".to_string(),
+        }
+    );
+    let tag_source = spans.iter().find_map(|s| match s {
+        RenderedSpan::Tag { source, .. } => Some(source.clone()),
+        _ => None,
+    });
+    assert_eq!(tag_source.as_deref(), Some("#[[Release Plan]]"));
+    Ok(())
+}
+
+#[test]
+fn cycling_a_task_walks_todo_doing_done_and_back_to_plain() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (a, _) = f.block(None, None, "Write the ADR")?;
+
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let v = f.version(a)?;
+        f.store.cycle_task(a, v, &user_meta("cycle"))?;
+        seen.push(f.store.get_block(a)?.context("block")?.content);
+    }
+    assert_eq!(
+        seen,
+        vec![
+            "TODO Write the ADR",
+            "DOING Write the ADR",
+            "DONE Write the ADR",
+            "Write the ADR",
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn toggling_done_checks_and_unchecks_a_task() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (a, _) = f.block(None, None, "DOING Write the ADR")?;
+
+    let v = f.version(a)?;
+    f.store.toggle_task_done(a, v, &user_meta("check"))?;
+    assert_eq!(
+        f.store.get_block(a)?.context("block")?.content,
+        "DONE Write the ADR"
+    );
+
+    let v = f.version(a)?;
+    f.store.toggle_task_done(a, v, &user_meta("uncheck"))?;
+    assert_eq!(
+        f.store.get_block(a)?.context("block")?.content,
+        "TODO Write the ADR"
+    );
+    Ok(())
+}
+
+#[test]
+fn task_commands_respect_the_editor_base_version() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (a, _) = f.block(None, None, "Write the ADR")?;
+    f.store.cycle_task(a, 1, &user_meta("cycle"))?;
+    let err = f
+        .store
+        .cycle_task(a, 1, &user_meta("stale cycle"))
+        .expect_err("stale version must be rejected");
+    assert!(matches!(err, Error::VersionMismatch { .. }));
+    Ok(())
 }

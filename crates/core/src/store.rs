@@ -445,23 +445,12 @@ impl Store {
         let mut rows = Vec::with_capacity(end - start);
 
         for item in &visible[start..end] {
-            let block = &item.block;
-            let rendered =
-                derive::render_content_with_cache(&self.conn, &mut title_cache, &block.content)?;
-            let spans = derive::render_spans(&self.conn, &mut title_cache, &block.content)?;
-            rows.push(FlatBlockRow {
-                id: block.id,
-                page_id: block.page_id,
-                parent_id: block.parent_id,
-                order_key: block.order_key.clone(),
-                depth: item.depth,
-                raw_content: block.content.clone(),
-                rendered_content: rendered,
-                spans,
-                collapsed: block.collapsed,
-                has_children: item.has_children,
-                version: block.version,
-            });
+            rows.push(self.flat_row(
+                &item.block,
+                item.depth,
+                item.has_children,
+                &mut title_cache,
+            )?);
         }
 
         Ok(PageWindow {
@@ -469,6 +458,55 @@ impl Store {
             total_visible,
             offset: start as u64,
             rows,
+        })
+    }
+
+    pub fn block_row(&self, id: Id) -> Result<Option<FlatBlockRow>> {
+        let Some(block) = self.get_block(id)? else {
+            return Ok(None);
+        };
+        if block.deleted_at.is_some() {
+            return Ok(None);
+        }
+        let mut depth = 0;
+        let mut parent = block.parent_id;
+        while let Some(parent_id) = parent {
+            depth += 1;
+            parent = self.get_block(parent_id)?.and_then(|b| b.parent_id);
+        }
+        let has_children = !self.list_children(block.page_id, Some(id))?.is_empty();
+        let mut title_cache = HashMap::new();
+        Ok(Some(self.flat_row(
+            &block,
+            depth,
+            has_children,
+            &mut title_cache,
+        )?))
+    }
+
+    fn flat_row(
+        &self,
+        block: &Block,
+        depth: u32,
+        has_children: bool,
+        title_cache: &mut HashMap<Id, Option<String>>,
+    ) -> Result<FlatBlockRow> {
+        Ok(FlatBlockRow {
+            id: block.id,
+            page_id: block.page_id,
+            parent_id: block.parent_id,
+            order_key: block.order_key.clone(),
+            depth,
+            raw_content: block.content.clone(),
+            rendered_content: derive::render_content_with_cache(
+                &self.conn,
+                title_cache,
+                &block.content,
+            )?,
+            spans: derive::render_spans(&self.conn, title_cache, &block.content)?,
+            collapsed: block.collapsed,
+            has_children,
+            version: block.version,
         })
     }
 

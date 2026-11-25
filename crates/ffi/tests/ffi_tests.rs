@@ -58,7 +58,7 @@ fn ffi_graph_round_trip_window_search_undo_redo_and_feed() -> Result<()> {
     assert_eq!(window.rows[1].rendered_content, "Ship [[Bridge]] #macos");
     assert!(
         window.rows[1].spans.iter().any(
-            |s| matches!(s, FfiSpan::PageLink { title, page_id: Some(_) } if title == "Bridge")
+            |s| matches!(s, FfiSpan::PageLink { title, page_id: Some(_), source } if title == "Bridge" && source == "[[Bridge]]")
         )
     );
     assert_eq!(window.rows[2].depth, 1);

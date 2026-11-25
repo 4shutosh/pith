@@ -74,29 +74,35 @@ pub fn render_spans(
     for span in parser::tokenize(content) {
         let task = pending_task.take();
         match span {
-            Span::Text(text) => match task
-                .as_deref()
-                .and_then(|t| text.trim_start().strip_prefix(t))
-            {
-                Some(rest) => {
-                    out.push(RenderedSpan::Task(task.unwrap_or_default()));
-                    if !rest.is_empty() {
-                        out.push(RenderedSpan::Text(rest.to_string()));
+            Span::Text(text) => {
+                let leading = text.len() - text.trim_start().len();
+                match task.filter(|t| text[leading..].starts_with(t.as_str())) {
+                    Some(state) => {
+                        let keyword_end = leading + state.len();
+                        out.push(RenderedSpan::Task {
+                            source: text[..keyword_end].to_string(),
+                            state,
+                        });
+                        if keyword_end < text.len() {
+                            out.push(RenderedSpan::Text(text[keyword_end..].to_string()));
+                        }
                     }
+                    None => out.push(RenderedSpan::Text(text.to_string())),
                 }
-                None => out.push(RenderedSpan::Text(text.to_string())),
-            },
+            }
             Span::Code(code) => out.push(RenderedSpan::Code(code.to_string())),
             Span::PageLink { raw, target } => out.push(match target {
                 RefTarget::Id(id) => match lookup_page_title(conn, cache, id)? {
                     Some(title) => RenderedSpan::PageLink {
                         page_id: Some(id),
+                        source: parser::page_link_source(&title),
                         title,
                     },
                     None => RenderedSpan::Text(raw.to_string()),
                 },
                 RefTarget::Title(title) => RenderedSpan::PageLink {
                     page_id: None,
+                    source: raw.to_string(),
                     title,
                 },
             }),
@@ -105,12 +111,14 @@ pub fn render_spans(
                     RefTarget::Id(id) => match lookup_page_title(conn, cache, id)? {
                         Some(title) => RenderedSpan::Tag {
                             page_id: Some(id),
+                            source: parser::tag_source(&title),
                             title,
                         },
                         None => RenderedSpan::Text(raw.to_string()),
                     },
                     RefTarget::Title(title) => RenderedSpan::Tag {
                         page_id: None,
+                        source: raw.to_string(),
                         title,
                     },
                 })
@@ -129,7 +137,11 @@ pub fn render_spans(
                     }
                     None => raw.to_string(),
                 };
-                out.push(RenderedSpan::BlockRef { block_id: id, text });
+                out.push(RenderedSpan::BlockRef {
+                    block_id: id,
+                    text,
+                    source: raw.to_string(),
+                });
             }
         }
     }

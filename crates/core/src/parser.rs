@@ -349,27 +349,14 @@ where
             }
             Span::PageLink { raw, target } => match target {
                 RefTarget::Id(id) => match lookup(id)? {
-                    Some(title) => {
-                        out.push_str("[[");
-                        out.push_str(&title);
-                        out.push_str("]]");
-                    }
+                    Some(title) => out.push_str(&page_link_source(&title)),
                     None => out.push_str(raw),
                 },
                 RefTarget::Title(_) => out.push_str(raw),
             },
             Span::BracketTag { raw, target } | Span::SimpleTag { raw, target } => match target {
                 RefTarget::Id(id) => match lookup(id)? {
-                    Some(title) => {
-                        if !title.is_empty() && title.chars().all(is_tag_char) {
-                            out.push('#');
-                            out.push_str(&title);
-                        } else {
-                            out.push_str("#[[");
-                            out.push_str(&title);
-                            out.push_str("]]");
-                        }
-                    }
+                    Some(title) => out.push_str(&tag_source(&title)),
                     None => out.push_str(raw),
                 },
                 RefTarget::Title(_) => out.push_str(raw),
@@ -377,6 +364,78 @@ where
         }
     }
     Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightKind {
+    Bracket,
+    Link,
+    Tag,
+    Code,
+    BlockRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Highlight {
+    pub start: usize,
+    pub len: usize,
+    pub kind: HighlightKind,
+}
+
+pub fn highlight_ranges(text: &str) -> Vec<Highlight> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    for span in tokenize(text) {
+        let (slice, kind) = match span {
+            Span::Text(s) => (s, None),
+            Span::Code(s) => (s, Some(HighlightKind::Code)),
+            Span::PageLink { raw, .. } => (raw, Some(HighlightKind::Link)),
+            Span::BracketTag { raw, .. } | Span::SimpleTag { raw, .. } => {
+                (raw, Some(HighlightKind::Tag))
+            }
+            Span::BlockRef { raw, .. } => (raw, Some(HighlightKind::BlockRef)),
+        };
+        let len = slice.chars().count();
+        match kind {
+            Some(HighlightKind::Link) => {
+                out.push(Highlight {
+                    start: offset,
+                    len: 2,
+                    kind: HighlightKind::Bracket,
+                });
+                out.push(Highlight {
+                    start: offset + 2,
+                    len: len - 4,
+                    kind: HighlightKind::Link,
+                });
+                out.push(Highlight {
+                    start: offset + len - 2,
+                    len: 2,
+                    kind: HighlightKind::Bracket,
+                });
+            }
+            Some(kind) => out.push(Highlight {
+                start: offset,
+                len,
+                kind,
+            }),
+            None => {}
+        }
+        offset += len;
+    }
+    out
+}
+
+pub fn page_link_source(title: &str) -> String {
+    format!("[[{title}]]")
+}
+
+pub fn tag_source(title: &str) -> String {
+    if !title.is_empty() && title.chars().all(is_tag_char) {
+        format!("#{title}")
+    } else {
+        format!("#[[{title}]]")
+    }
 }
 
 pub fn set_property_in_content(content: &str, key: &str, value: &str) -> String {

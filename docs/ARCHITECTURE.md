@@ -127,7 +127,7 @@ Saves during one editing session share an `undo_group`, so a typing burst is one
 
 **Editor commands live in the core.** Split, merge, indent, outdent and append compile to canonical ops using the full tree, never the rows a UI happens to have loaded. Edits carry the version the editor started from, so a change made elsewhere surfaces as a conflict instead of being overwritten. A journal page is created together with its first block, so opening the app writes nothing.
 
-**Display:** the core turns block content into typed spans (text, code, task, page link, tag, block ref); UIs style those spans and never re-parse content.
+**Display:** the core turns block content into typed spans (text, code, task, page link, tag, block ref), each carrying its exact source text, so the spans join back into the editable text. UIs style those spans and never re-parse content; for text being edited, the core also returns highlight ranges. A block is displayed and edited by the same text view, so focusing a block never shifts it; the task keyword stays outside the edited text and is changed by commands (cycle, toggle done) in the core.
 
 ---
 

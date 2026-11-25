@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use pith_core::journal::resolve_journal_date;
+use pith_core::parser::{HighlightKind, highlight_ranges};
 use pith_core::snippet::Segment;
 use pith_core::{
     ApplyResult, Backlink, ChangeEntry, ChangeFeed, EditOutcome, Error, FlatBlockRow, Id, Op,
@@ -305,6 +306,7 @@ impl TryFrom<FfiOp> for Op {
 pub struct FfiApplyResult {
     pub txn_id: Option<String>,
     pub applied_count: u32,
+    pub pages_changed: bool,
 }
 
 impl From<ApplyResult> for FfiApplyResult {
@@ -312,6 +314,15 @@ impl From<ApplyResult> for FfiApplyResult {
         Self {
             txn_id: res.txn_id.map(|id| id.to_string()),
             applied_count: res.applied_ops.len() as u32,
+            pages_changed: res.applied_ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::CreatePage { .. }
+                        | Op::RenamePage { .. }
+                        | Op::DeletePage { .. }
+                        | Op::RestorePage { .. }
+                )
+            }),
         }
     }
 }
@@ -416,18 +427,22 @@ pub enum FfiSpan {
     },
     Task {
         state: String,
+        source: String,
     },
     PageLink {
         page_id: Option<String>,
         title: String,
+        source: String,
     },
     Tag {
         page_id: Option<String>,
         title: String,
+        source: String,
     },
     BlockRef {
         block_id: String,
         text: String,
+        source: String,
     },
 }
 
@@ -436,18 +451,33 @@ impl From<RenderedSpan> for FfiSpan {
         match span {
             RenderedSpan::Text(text) => Self::Text { text },
             RenderedSpan::Code(text) => Self::Code { text },
-            RenderedSpan::Task(state) => Self::Task { state },
-            RenderedSpan::PageLink { page_id, title } => Self::PageLink {
+            RenderedSpan::Task { state, source } => Self::Task { state, source },
+            RenderedSpan::PageLink {
+                page_id,
+                title,
+                source,
+            } => Self::PageLink {
                 page_id: page_id.map(|id| id.to_string()),
                 title,
+                source,
             },
-            RenderedSpan::Tag { page_id, title } => Self::Tag {
+            RenderedSpan::Tag {
+                page_id,
+                title,
+                source,
+            } => Self::Tag {
                 page_id: page_id.map(|id| id.to_string()),
                 title,
+                source,
             },
-            RenderedSpan::BlockRef { block_id, text } => Self::BlockRef {
+            RenderedSpan::BlockRef {
+                block_id,
+                text,
+                source,
+            } => Self::BlockRef {
                 block_id: block_id.to_string(),
                 text,
+                source,
             },
         }
     }
@@ -618,6 +648,32 @@ impl PithGraph {
             .map(Into::into))
     }
 
+    pub fn cycle_task(
+        &self,
+        block_id: String,
+        base_version: i64,
+        meta: FfiTxMeta,
+    ) -> Result<FfiEditOutcome, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .cycle_task(block_id, base_version, &meta.into())?
+            .into())
+    }
+
+    pub fn toggle_task_done(
+        &self,
+        block_id: String,
+        base_version: i64,
+        meta: FfiTxMeta,
+    ) -> Result<FfiEditOutcome, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .toggle_task_done(block_id, base_version, &meta.into())?
+            .into())
+    }
+
     pub fn indent_block(
         &self,
         block_id: String,
@@ -642,6 +698,12 @@ impl PithGraph {
         Ok(store
             .outdent_block(block_id, base_version, &meta.into())?
             .map(Into::into))
+    }
+
+    pub fn block_row(&self, block_id: String) -> Result<Option<FfiFlatBlockRow>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.block_row(block_id)?.map(Into::into))
     }
 
     pub fn read_page_window(
@@ -725,6 +787,40 @@ impl PithGraph {
         let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
         Ok(store.changes_since(after_seq, limit as usize)?.into())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiHighlightKind {
+    Bracket,
+    Link,
+    Tag,
+    Code,
+    BlockRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiHighlight {
+    pub start: u32,
+    pub len: u32,
+    pub kind: FfiHighlightKind,
+}
+
+#[uniffi::export]
+pub fn highlight(text: String) -> Vec<FfiHighlight> {
+    highlight_ranges(&text)
+        .into_iter()
+        .map(|h| FfiHighlight {
+            start: h.start as u32,
+            len: h.len as u32,
+            kind: match h.kind {
+                HighlightKind::Bracket => FfiHighlightKind::Bracket,
+                HighlightKind::Link => FfiHighlightKind::Link,
+                HighlightKind::Tag => FfiHighlightKind::Tag,
+                HighlightKind::Code => FfiHighlightKind::Code,
+                HighlightKind::BlockRef => FfiHighlightKind::BlockRef,
+            },
+        })
+        .collect()
 }
 
 #[uniffi::export]

@@ -666,6 +666,40 @@ proptest! {
     }
 
     #[test]
+    fn span_sources_join_back_into_the_editable_text(
+        lines in prop::collection::vec(syntax_line_strategy(), 1..12)
+    ) {
+        let mut store = Store::open_in_memory().expect("open");
+        let page = Id::new();
+        let block = Id::new();
+        store
+            .apply_ops(
+                &[
+                    Op::CreatePage {
+                        id: page,
+                        title: "Host".to_string(),
+                        journal_day: None,
+                        document_mode: false,
+                    },
+                    Op::InsertBlock {
+                        id: block,
+                        page_id: page,
+                        parent_id: None,
+                        order_key: order::between(None, None).expect("key"),
+                        content: lines.join("\n"),
+                    },
+                ],
+                &user_meta("prop"),
+            )
+            .expect("apply");
+
+        let row = store.read_page_window(page, 0, 1).expect("window").rows[0].clone();
+        let joined: String = row.spans.iter().map(|s| s.source()).collect();
+        let stored = store.get_block(block).expect("get").expect("exists");
+        prop_assert_eq!(joined, store.render_content(&stored.content).expect("render"));
+    }
+
+    #[test]
     fn canonicalize_then_render_round_trips_rich_content(
         word in "[a-zA-Z]{2,8}",
         page_a in "[A-Z][a-z]{2,8}",
