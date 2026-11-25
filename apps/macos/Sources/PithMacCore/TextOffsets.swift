@@ -26,6 +26,25 @@ public enum TextOffsets {
         return text.unicodeScalars.distance(from: text.unicodeScalars.startIndex, to: index)
     }
 
+    public static func column(ofScalar offset: Int, in text: String) -> Int {
+        let scalars = Array(text.unicodeScalars)
+        let clamped = max(0, min(offset, scalars.count))
+        let lineStart = scalars[..<clamped].lastIndex(of: "\n").map { $0 + 1 } ?? 0
+        return clamped - lineStart
+    }
+
+    public static func offsetInFirstLine(atColumn column: Int, in text: String) -> Int {
+        let scalars = Array(text.unicodeScalars)
+        let firstLineLength = scalars.firstIndex(of: "\n") ?? scalars.count
+        return min(max(0, column), firstLineLength)
+    }
+
+    public static func offsetInLastLine(atColumn column: Int, in text: String) -> Int {
+        let scalars = Array(text.unicodeScalars)
+        let lastLineStart = scalars.lastIndex(of: "\n").map { $0 + 1 } ?? 0
+        return lastLineStart + min(max(0, column), scalars.count - lastLineStart)
+    }
+
     private static func scalarIndex(_ offset: Int, in text: String) -> String.Index {
         let scalars = text.unicodeScalars
         let clamped = max(0, min(offset, scalars.count))

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import PithCore
 import PithMacCore
@@ -66,9 +67,9 @@ final class OutlinerTests: XCTestCase {
         controller.outdentFocusedBlock()
         XCTAssertEqual(controller.rows.map(\.depth), [0, 0])
 
-        controller.moveFocusUp()
+        controller.moveFocusUp(column: 0)
         XCTAssertEqual(controller.focusedBlockId, firstId)
-        controller.moveFocusDown()
+        controller.moveFocusDown(column: 0)
         XCTAssertEqual(controller.focusedBlockId, controller.rows[1].id)
 
         controller.handleBackspaceAtStart()
@@ -119,34 +120,6 @@ final class OutlinerTests: XCTestCase {
         XCTAssertEqual(controller.rows.map(\.depth), [0, 1, 1, 1])
     }
 
-    func testAnExternalEditWhileTypingIsAConflictNotAnOverwrite() throws {
-        let path = NSTemporaryDirectory() + "pith-conflict-\(UUID().uuidString).db"
-        defer { for s in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + s) } }
-        let appGraph = try PithGraph.open(path: path)
-        let agentGraph = try PithGraph.open(path: path)
-        let controller = try makeController(appGraph)
-        controller.ensureFirstBlockAndFocus()
-        try type(controller, "original")
-        let blockId = try XCTUnwrap(controller.focusedBlockId)
-        let pageId = try XCTUnwrap(controller.selectedPageId)
-        let savedVersion = controller.rows[0].version
-
-        controller.updateDraft(blockId: blockId, text: "my draft", isComposing: false)
-        _ = try agentGraph.applyOps(
-            ops: [.updateBlock(id: blockId, content: "agent text", expectedVersion: savedVersion)],
-            meta: agentMeta()
-        )
-        controller.pollExternalChanges()
-        controller.flushDraft()
-
-        XCTAssertEqual(controller.conflict, EditConflict(blockId: blockId, mine: "my draft", theirs: "agent text"))
-        XCTAssertEqual(try agentGraph.readPageWindow(pageId: pageId, offset: 0, limit: 5).rows[0].rawContent, "agent text")
-
-        controller.keepMine()
-        XCTAssertNil(controller.conflict)
-        XCTAssertEqual(try agentGraph.readPageWindow(pageId: pageId, offset: 0, limit: 5).rows[0].rawContent, "my draft")
-    }
-
     func testAnExternalEditWithoutLocalTypingIsAdoptedSilently() throws {
         let path = NSTemporaryDirectory() + "pith-adopt-\(UUID().uuidString).db"
         defer { for s in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + s) } }
@@ -163,7 +136,6 @@ final class OutlinerTests: XCTestCase {
         )
         controller.pollExternalChanges()
 
-        XCTAssertNil(controller.conflict)
         XCTAssertEqual(controller.draftText, "agent text")
     }
 
@@ -182,20 +154,7 @@ final class OutlinerTests: XCTestCase {
         XCTAssertEqual(controller.rows[0].renderedContent, "日本")
     }
 
-    func testInlineFormatterStylesCoreSpansWithoutReparsing() {
-        let spans: [FfiSpan] = [
-            .task(state: "TODO"),
-            .text(text: " Ship "),
-            .pageLink(pageId: "p1", title: "Roadmap"),
-            .text(text: " "),
-            .tag(pageId: "p2", title: "macos"),
-            .text(text: " "),
-            .code(text: "`[[x]]`"),
-        ]
-        let formatted = InlineFormatter.format(spans)
-        XCTAssertEqual(String(formatted.characters), "TODO Ship Roadmap #macos `[[x]]`")
-        XCTAssertEqual(InlineFormatter.pageId(from: URL(string: "pith://page/p1")!), "p1")
-    }
+
 
     func testSplittingAfterAnEmojiKeepsTheEmojiIntact() throws {
         let graph = try PithGraph.openInMemory()
@@ -205,36 +164,6 @@ final class OutlinerTests: XCTestCase {
 
         controller.handleReturn(at: 3)
         XCTAssertEqual(controller.rows.map(\.renderedContent), ["👍🏽 ", "ab"])
-    }
-
-    func testNavigationIsBlockedWhileAConflictIsUnresolved() throws {
-        let path = NSTemporaryDirectory() + "pith-conflict-nav-\(UUID().uuidString).db"
-        defer { for s in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + s) } }
-        let appGraph = try PithGraph.open(path: path)
-        let agentGraph = try PithGraph.open(path: path)
-        let controller = try makeController(appGraph)
-        controller.ensureFirstBlockAndFocus()
-        try type(controller, "original")
-        let blockId = try XCTUnwrap(controller.focusedBlockId)
-        let journalId = try XCTUnwrap(controller.selectedPageId)
-        controller.openPageByTitle("Elsewhere")
-        controller.selectPage(journalId)
-        controller.focusBlock(blockId)
-
-        controller.updateDraft(blockId: blockId, text: "my draft", isComposing: false)
-        _ = try agentGraph.applyOps(
-            ops: [.updateBlock(id: blockId, content: "agent text", expectedVersion: controller.rows[0].version)],
-            meta: agentMeta()
-        )
-        controller.pollExternalChanges()
-        XCTAssertNotNil(controller.conflict)
-
-        controller.openPageByTitle("Elsewhere")
-        controller.undo()
-
-        XCTAssertEqual(controller.selectedPageId, journalId)
-        XCTAssertEqual(controller.draftText, "my draft")
-        XCTAssertEqual(controller.conflict?.mine, "my draft")
     }
 
     func testTypingAfterAnIndentIsASeparateUndoStep() throws {
@@ -250,5 +179,109 @@ final class OutlinerTests: XCTestCase {
         controller.undo()
         XCTAssertEqual(controller.rows.map(\.renderedContent), ["Parent", "x"])
         XCTAssertEqual(controller.rows.map(\.depth), [0, 1])
+    }
+
+    private func seedBlock(_ graph: PithGraph, _ controller: OutlinerController, _ content: String) throws -> String {
+        controller.ensureFirstBlockAndFocus()
+        let id = try XCTUnwrap(controller.focusedBlockId)
+        controller.blurFocus()
+        _ = try graph.applyOps(
+            ops: [.updateBlock(id: id, content: content, expectedVersion: nil)],
+            meta: FfiTxMeta(writer: .user, actor: "setup", session: nil, summary: "seed", undoGroup: nil)
+        )
+        controller.reload()
+        return id
+    }
+
+    func testEditingATaskEditsOnlyTheTextAndKeepsTheKeyword() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        let id = try seedBlock(graph, controller, "TODO write the ADR")
+
+        controller.focusBlock(id)
+        XCTAssertEqual(controller.draftText, "write the ADR")
+        try type(controller, "write the ADR today")
+        XCTAssertEqual(controller.rows[0].rawContent, "TODO write the ADR today")
+    }
+
+    func testCommandReturnCyclesTheTaskWithoutTouchingTheText() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        let id = try seedBlock(graph, controller, "write the ADR")
+        controller.focusBlock(id)
+
+        controller.cycleTask(caret: 5)
+        XCTAssertEqual(controller.rows[0].rawContent, "TODO write the ADR")
+        XCTAssertEqual(controller.draftText, "write the ADR")
+        XCTAssertEqual(controller.requestedCursorOffset, 5)
+
+        controller.cycleTask(caret: 5)
+        XCTAssertEqual(controller.rows[0].rawContent, "DOING write the ADR")
+    }
+
+    func testClickingTheStatusCircleTicksATaskWithoutStartingToEdit() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        let id = try seedBlock(graph, controller, "DOING ship it")
+
+        controller.toggleTaskDone(id)
+        XCTAssertEqual(controller.rows[0].rawContent, "DONE ship it")
+        XCTAssertNil(controller.focusedBlockId)
+    }
+
+    func testArrowKeysKeepTheColumnAcrossBlocks() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+        try type(controller, "first line\nlast line here")
+        controller.handleReturn(at: 24)
+        try type(controller, "next block")
+
+        controller.moveFocusUp(column: 4)
+        XCTAssertEqual(controller.requestedCursorOffset, 15)
+
+        controller.moveFocusDown(column: 30)
+        XCTAssertEqual(controller.requestedCursorOffset, 10)
+    }
+
+    func testSavingWhileTypingRefreshesOnlyTheEditedRow() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+        try type(controller, "one")
+        controller.handleReturn(at: 3)
+        try type(controller, "two")
+        var pagePublishes = 0
+        var backlinkPublishes = 0
+        let pagesWatch = controller.$pages.dropFirst().sink { _ in pagePublishes += 1 }
+        let backlinksWatch = controller.$backlinks.dropFirst().sink { _ in backlinkPublishes += 1 }
+
+        try type(controller, "two more")
+
+        XCTAssertEqual(controller.rows.map(\.renderedContent), ["one", "two more"])
+        XCTAssertEqual(pagePublishes, 0)
+        XCTAssertEqual(backlinkPublishes, 0)
+        pagesWatch.cancel()
+        backlinksWatch.cancel()
+
+        try type(controller, "two more [[New Page]]")
+        XCTAssertTrue(controller.pages.contains { $0.title == "New Page" })
+    }
+
+    func testTypingDoesNotRepublishTheController() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+        let id = try XCTUnwrap(controller.focusedBlockId)
+
+        var changes = 0
+        let watch = controller.objectWillChange.sink { changes += 1 }
+        controller.updateDraft(blockId: id, text: "H", isComposing: false)
+        controller.updateDraft(blockId: id, text: "He", isComposing: false)
+        controller.updateDraft(blockId: id, text: "Hel", isComposing: false)
+        watch.cancel()
+
+        XCTAssertEqual(changes, 0)
+        XCTAssertEqual(controller.draftText, "Hel")
     }
 }

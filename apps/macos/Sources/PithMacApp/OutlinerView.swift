@@ -2,230 +2,335 @@ import PithCore
 import PithMacCore
 import SwiftUI
 
-struct OutlinerView: View {
-    @ObservedObject var controller: OutlinerController
-    @State private var showBacklinks: Bool = true
+struct PanelHeader: View {
+    let crumbs: [String]
+    var trailing: String? = nil
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let title = controller.pageTitle {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(title)
-                                .font(.system(size: 26, weight: .bold))
-                            Spacer()
-                            Text("\(controller.totalVisible) blocks")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.bottom, 16)
-                    }
-
-                    if let conflict = controller.conflict {
-                        ConflictBanner(conflict: conflict, controller: controller)
-                            .padding(.bottom, 8)
-                    }
-
-                    if let err = controller.errorMessage {
-                        Text(err)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .padding(.bottom, 8)
-                    }
-
-                    if controller.rows.isEmpty {
-                        Button {
-                            controller.ensureFirstBlockAndFocus()
-                        } label: {
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(Color.secondary.opacity(0.45))
-                                    .frame(width: 6, height: 6)
-                                Text("Click to start writing...")
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                            }
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(controller.rows, id: \.id) { row in
-                                OutlinerRowView(
-                                    row: row,
-                                    isFocused: controller.focusedBlockId == row.id,
-                                    controller: controller
-                                )
-                                .id(row.id)
-                            }
-                        }
-                    }
-
-                    if !controller.backlinks.isEmpty {
-                        Divider()
-                            .padding(.vertical, 20)
-
-                        DisclosureGroup(
-                            "Linked References (\(controller.backlinks.count))",
-                            isExpanded: $showBacklinks
-                        ) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(controller.backlinks, id: \.blockId) { bl in
-                                    Button {
-                                        controller.selectPage(bl.pageId)
-                                        controller.focusBlock(bl.blockId)
-                                    } label: {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(bl.pageTitle)
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                            Text(InlineFormatter.format(bl.spans))
-                                                .font(.body)
-                                                .foregroundColor(.primary)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                        }
-                                        .padding(8)
-                                        .background(Color.secondary.opacity(0.08))
-                                        .cornerRadius(6)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(.top, 8)
-                        }
-                    }
-
-                    Spacer(minLength: 80)
+        HStack(spacing: 8) {
+            ForEach(Array(crumbs.enumerated()), id: \.offset) { index, crumb in
+                if index > 0 {
+                    Text("/").foregroundColor(Theme.bullet)
                 }
-                .padding(.horizontal, 28)
-                .padding(.top, 24)
-                .frame(maxWidth: 820, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .center)
+                Text(crumb)
+                    .foregroundColor(index == crumbs.count - 1 ? Theme.textPrimary : Theme.textSecondary)
+                    .fontWeight(index == crumbs.count - 1 ? .medium : .regular)
+                    .lineLimit(1)
             }
-            .onChange(of: controller.focusedBlockId) { newId in
-                if let id = newId {
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        proxy.scrollTo(id, anchor: .center)
-                    }
-                }
+            Spacer()
+            if let trailing {
+                Text(trailing).foregroundColor(Theme.textTertiary)
             }
+        }
+        .font(Typography.ui(13))
+        .padding(.horizontal, 20)
+        .frame(height: 50)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.divider).frame(height: 1)
         }
     }
 }
 
-private struct OutlinerRowView: View {
-    let row: FfiFlatBlockRow
-    let isFocused: Bool
+struct OutlinerView: View {
     @ObservedObject var controller: OutlinerController
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            bulletControl
-                .frame(width: 18, height: 22)
+    private var section: String {
+        let isJournal = controller.selectedPageId == nil
+            || controller.pages.first(where: { $0.id == controller.selectedPageId })?.journalDay != nil
+        return isJournal ? "Journals" : "Pages"
+    }
 
-            if isFocused {
-                BlockTextEditor(
-                    blockId: row.id,
-                    text: $controller.draftText,
-                    requestedCursorOffset: controller.requestedCursorOffset,
-                    cursorRequestSeq: controller.cursorRequestSeq,
-                    onTextChange: { text, composing in
-                        controller.updateDraft(blockId: row.id, text: text, isComposing: composing)
-                    },
-                    onReturn: { offset in
-                        controller.handleReturn(at: offset)
-                    },
-                    onBackspaceAtStart: {
-                        controller.handleBackspaceAtStart()
-                    },
-                    onTab: {
-                        controller.indentFocusedBlock()
-                    },
-                    onShiftTab: {
-                        controller.outdentFocusedBlock()
-                    },
-                    onMoveUp: {
-                        controller.moveFocusUp()
-                    },
-                    onMoveDown: {
-                        controller.moveFocusDown()
-                    },
-                    onEscape: {
-                        controller.blurFocus()
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(
+                crumbs: [section, controller.pageTitle ?? ""],
+                trailing: controller.backlinks.isEmpty ? nil : "\(controller.backlinks.count) linked"
+            )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        content
+                            .frame(maxWidth: 720, alignment: .leading)
+                            .padding(.horizontal, 32)
+                            .padding(.top, 44)
+                            .padding(.bottom, 120)
+                        Spacer(minLength: 0)
                     }
-                )
-            } else {
-                inactiveText
+                }
+                .onChange(of: controller.focusedBlockId) { newId in
+                    if let id = newId {
+                        proxy.scrollTo(id)
+                    }
+                }
             }
         }
-        .padding(.leading, CGFloat(row.depth) * 20)
-        .padding(.vertical, 2)
+        .environment(\.openURL, OpenURLAction { url in
+            if let pageId = InlineFormatter.pageId(from: url) {
+                controller.openPage(id: pageId)
+                return .handled
+            }
+            return .systemAction
+        })
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(controller.pageTitle ?? "")
+                .font(Typography.ui(28, .semibold))
+                .tracking(-0.3)
+                .foregroundColor(Theme.textStrong)
+            Text(subtitle)
+                .font(Typography.ui(13))
+                .foregroundColor(Theme.textTertiary)
+                .padding(.top, 6)
+                .padding(.bottom, 26)
+
+            if let error = controller.errorMessage {
+                Text(error)
+                    .font(Typography.ui(12))
+                    .foregroundColor(Theme.danger)
+                    .padding(.bottom, 10)
+            }
+
+            if controller.rows.isEmpty {
+                Button {
+                    controller.ensureFirstBlockAndFocus()
+                } label: {
+                    HStack(spacing: 10) {
+                        Circle().fill(Theme.bullet).frame(width: 5, height: 5).frame(width: 18)
+                        Text("Start writing…")
+                            .font(Typography.ui(15))
+                            .foregroundColor(Theme.textTertiary)
+                        Spacer()
+                    }
+                    .frame(height: 30)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 14)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(controller.rows, id: \.id) { row in
+                        let isFocused = controller.focusedBlockId == row.id
+                        OutlineRow(
+                            row: row,
+                            isFocused: isFocused,
+                            cursorOffset: isFocused ? controller.requestedCursorOffset : nil,
+                            cursorSeq: isFocused ? controller.cursorRequestSeq : 0,
+                            controller: controller
+                        )
+                        .id(row.id)
+                    }
+                }
+            }
+
+            if !controller.backlinks.isEmpty {
+                LinkedReferences(controller: controller)
+                    .padding(.top, 44)
+            }
+        }
+    }
+
+    private var subtitle: String {
+        let count = controller.totalVisible
+        let blocks = count == 1 ? "1 block" : "\(count) blocks"
+        if controller.isShowingToday {
+            return "Today · \(blocks)"
+        }
+        return blocks
+    }
+}
+
+private struct OutlineRow: View {
+    let row: FfiFlatBlockRow
+    let isFocused: Bool
+    let cursorOffset: Int?
+    let cursorSeq: UInt64
+    let controller: OutlinerController
+    @State private var isHovered = false
+
+    private static let indent: CGFloat = 24
+    private static let guideX: CGFloat = 22.5
+    private static let rowPadding: CGFloat = 3
+
+    var body: some View {
+        let presentation = BlockPresentation.runs(row.spans)
+        HStack(alignment: .top, spacing: 0) {
+            disclosure
+                .frame(width: 14, height: BlockStyle.lineHeight)
+            marker(presentation.status)
+                .frame(width: 18, height: BlockStyle.lineHeight)
+            BlockTextView(
+                blockId: row.id,
+                isEditing: isFocused,
+                display: BlockStyle.display(presentation.runs, closed: presentation.status?.isClosed ?? false),
+                runs: presentation.runs,
+                text: Binding(get: { controller.draftText }, set: { controller.draftText = $0 }),
+                requestedCursorOffset: cursorOffset,
+                cursorRequestSeq: cursorSeq,
+                onActivate: { controller.focusBlock(row.id, cursorOffset: $0) },
+                onOpenPage: { controller.openPage(id: $0) },
+                onTextChange: { text, composing in
+                    controller.updateDraft(blockId: row.id, text: text, isComposing: composing)
+                },
+                onReturn: { controller.handleReturn(at: $0) },
+                onCycleTask: { controller.cycleTask(caret: $0) },
+                onBackspaceAtStart: { controller.handleBackspaceAtStart() },
+                onTab: { controller.indentFocusedBlock() },
+                onShiftTab: { controller.outdentFocusedBlock() },
+                onMoveUp: { controller.moveFocusUp(column: $0) },
+                onMoveDown: { controller.moveFocusDown(column: $0) },
+                onEscape: { controller.blurFocus() }
+            )
+            .padding(.leading, 8)
+        }
+        .padding(.leading, CGFloat(row.depth) * Self.indent)
+        .padding(.vertical, Self.rowPadding)
+        .background(alignment: .topLeading) { guides }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+    }
+
+    private var guides: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(0..<Int(row.depth), id: \.self) { level in
+                Rectangle()
+                    .fill(Theme.guide)
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+                    .offset(x: CGFloat(level) * Self.indent + Self.guideX)
+            }
+            if row.hasChildren && !row.collapsed {
+                Rectangle()
+                    .fill(Theme.guide)
+                    .frame(width: 1)
+                    .frame(maxHeight: .infinity)
+                    .padding(.top, Self.rowPadding + BlockStyle.lineHeight / 2 + 7)
+                    .offset(x: CGFloat(row.depth) * Self.indent + Self.guideX)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
-    private var bulletControl: some View {
+    private var disclosure: some View {
         if row.hasChildren {
             Button {
                 controller.toggleCollapse(row.id)
             } label: {
                 Image(systemName: row.collapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.secondary)
-                    .frame(width: 18, height: 22)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(Theme.textTertiary)
+                    .frame(width: 14, height: BlockStyle.lineHeight)
+                    .contentShape(Rectangle())
+                    .opacity(isHovered ? 1 : 0)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(row.collapsed ? "Expand" : "Collapse")
+        } else {
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private func marker(_ status: TaskStatus?) -> some View {
+        if let status {
+            Button {
+                controller.toggleTaskDone(row.id)
+            } label: {
+                StatusIcon(status: status)
+                    .frame(width: 18, height: BlockStyle.lineHeight)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         } else {
-            Circle()
-                .fill(Color.secondary.opacity(0.55))
-                .frame(width: 5, height: 5)
-                .frame(width: 18, height: 22)
-        }
-    }
-
-    private var inactiveText: some View {
-        let display = row.spans.isEmpty
-            ? AttributedString(" ")
-            : InlineFormatter.format(row.spans)
-        return Text(display)
-            .font(.body)
-            .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-            .contentShape(Rectangle())
-            .environment(\.openURL, OpenURLAction { url in
-                if let pageId = InlineFormatter.pageId(from: url) {
-                    controller.openPage(id: pageId)
-                    return .handled
+            ZStack {
+                if row.hasChildren && row.collapsed {
+                    Circle()
+                        .fill(Theme.bullet.opacity(0.35))
+                        .frame(width: 14, height: 14)
                 }
-                return .systemAction
-            })
-            .onTapGesture {
-                controller.focusBlock(row.id, cursorOffset: TextOffsets.length(row.renderedContent))
+                Circle()
+                    .fill(Theme.bullet)
+                    .frame(width: 5, height: 5)
             }
+            .accessibilityLabel(row.hasChildren && row.collapsed ? "Collapsed block" : "Block")
+        }
     }
 }
 
-private struct ConflictBanner: View {
-    let conflict: EditConflict
+struct StatusIcon: View {
+    let status: TaskStatus
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 14, weight: .regular))
+            .foregroundColor(color)
+            .accessibilityLabel(label)
+    }
+
+    private var symbol: String {
+        switch status {
+        case .todo: return "circle"
+        case .doing: return "circle.lefthalf.filled"
+        case .later: return "circle.dashed"
+        case .done: return "checkmark.circle.fill"
+        case .canceled: return "xmark.circle.fill"
+        }
+    }
+
+    private var color: Color {
+        switch status {
+        case .todo, .later, .canceled: return Theme.textTertiary
+        case .doing: return Theme.inProgress
+        case .done: return Theme.accent
+        }
+    }
+
+    private var label: String {
+        switch status {
+        case .todo: return "To do"
+        case .doing: return "In progress"
+        case .later: return "Later"
+        case .done: return "Done"
+        case .canceled: return "Canceled"
+        }
+    }
+}
+
+private struct LinkedReferences: View {
     @ObservedObject var controller: OutlinerController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("This block was changed elsewhere while you were editing.")
-                .font(.callout.weight(.semibold))
-            Text("Theirs: \(conflict.theirs)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(3)
-            HStack {
-                Button("Keep mine") { controller.keepMine() }
-                Button("Use theirs") { controller.keepTheirs() }
+        VStack(alignment: .leading, spacing: 10) {
+            Rectangle().fill(Theme.panelBorder).frame(height: 1)
+            Text("Linked references · \(controller.backlinks.count)")
+                .font(Typography.ui(12, .medium))
+                .foregroundColor(Theme.textSecondary)
+                .padding(.top, 8)
+            ForEach(controller.backlinks, id: \.blockId) { backlink in
+                Button {
+                    controller.selectPage(backlink.pageId)
+                    controller.focusBlock(backlink.blockId)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(backlink.pageTitle)
+                            .font(Typography.ui(12))
+                            .foregroundColor(Theme.textTertiary)
+                        Text(InlineFormatter.format(backlink.spans))
+                            .font(Typography.ui(14))
+                            .foregroundColor(Theme.textBody)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.hover))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.panelBorder, lineWidth: 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12))
-        .cornerRadius(8)
     }
 }

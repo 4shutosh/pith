@@ -1,18 +1,6 @@
 import Foundation
 import PithCore
 
-public struct EditConflict: Equatable {
-    public let blockId: String
-    public let mine: String
-    public let theirs: String
-
-    public init(blockId: String, mine: String, theirs: String) {
-        self.blockId = blockId
-        self.mine = mine
-        self.theirs = theirs
-    }
-}
-
 @MainActor
 public final class OutlinerController: ObservableObject {
     @Published public var pages: [FfiPage] = []
@@ -22,21 +10,23 @@ public final class OutlinerController: ObservableObject {
     @Published public var totalVisible: UInt64 = 0
     @Published public var backlinks: [FfiBacklink] = []
     @Published public var focusedBlockId: String?
-    @Published public var draftText: String = ""
+    public var draftText: String = ""
     @Published public var requestedCursorOffset: Int?
     @Published public var cursorRequestSeq: UInt64 = 0
     @Published public var searchQuery: String = ""
     @Published public var searchHits: [FfiSearchHit] = []
-    @Published public var conflict: EditConflict?
+    @Published public var isShowingAllPages: Bool = false
     @Published public var errorMessage: String?
 
     public let graph: PithGraph
     public let actor: String
+    public let todayTitle: String
     public var debounceNanoseconds: UInt64 = 300_000_000
     public var pageWindowLimit: UInt64 = 500
 
     private var draftBaseVersion: Int64 = 0
     private var draftBaseText: String = ""
+    private var editPrefix: String = ""
     private var undoGroup: String = newId()
     private var lastDataVersion: Int64 = 0
     private var isComposingIME: Bool = false
@@ -45,6 +35,7 @@ public final class OutlinerController: ObservableObject {
     public init(graph: PithGraph, actor: String = "me") throws {
         self.graph = graph
         self.actor = actor
+        self.todayTitle = try journalTitle(date: nil)
         self.lastDataVersion = try graph.dataVersion()
         try showTodayJournal()
     }
@@ -54,6 +45,22 @@ public final class OutlinerController: ObservableObject {
             return pages.first(where: { $0.id == id })?.title
         }
         return pendingJournalTitle
+    }
+
+    public var isShowingToday: Bool {
+        !isShowingAllPages && pageTitle == todayTitle
+    }
+
+    public var recentPages: [FfiPage] {
+        Self.recent(pages, limit: 8)
+    }
+
+    public static func recent(_ pages: [FfiPage], limit: Int) -> [FfiPage] {
+        Array(
+            pages
+                .sorted { ($0.updatedAt, $0.title) > ($1.updatedAt, $1.title) }
+                .prefix(limit)
+        )
     }
 
     public func reload() {
@@ -81,16 +88,16 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func selectPage(_ pageId: String) {
-        guard resolveConflictFirst() else { return }
         leaveBlock()
+        isShowingAllPages = false
         pendingJournalTitle = nil
         selectedPageId = pageId
         reload()
     }
 
     public func openTodayJournal() {
-        guard resolveConflictFirst() else { return }
         leaveBlock()
+        isShowingAllPages = false
         do {
             try showTodayJournal()
         } catch {
@@ -98,12 +105,17 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
+    public func showAllPages() {
+        leaveBlock()
+        isShowingAllPages = true
+        run { pages = try graph.listPages() }
+    }
+
     public func openPage(id: String) {
         selectPage(id)
     }
 
     public func openPageByTitle(_ title: String) {
-        guard resolveConflictFirst() else { return }
         leaveBlock()
         do {
             if let existing = try graph.getPageByTitle(title: title) {
@@ -123,7 +135,6 @@ public final class OutlinerController: ObservableObject {
 
     public func focusBlock(_ blockId: String, cursorOffset: Int? = nil) {
         if focusedBlockId != blockId {
-            guard resolveConflictFirst() else { return }
             leaveBlock()
             guard let row = rows.first(where: { $0.id == blockId }) else { return }
             beginEditing(row)
@@ -137,7 +148,7 @@ public final class OutlinerController: ObservableObject {
 
     public func ensureFirstBlockAndFocus() {
         if let first = rows.first {
-            focusBlock(first.id, cursorOffset: TextOffsets.length(first.renderedContent))
+            focusBlock(first.id, cursorOffset: TextOffsets.length(BlockPresentation.editable(first.spans).text))
             return
         }
         run {
@@ -172,30 +183,34 @@ public final class OutlinerController: ObservableObject {
     public func flushDraft() {
         debounceTask?.cancel()
         debounceTask = nil
-        guard !isComposingIME, conflict == nil, let blockId = focusedBlockId, isDirty else { return }
+        guard !isComposingIME, let blockId = focusedBlockId, isDirty else { return }
         do {
-            _ = try graph.applyOps(
-                ops: [.updateBlock(id: blockId, content: draftText, expectedVersion: draftBaseVersion)],
+            let result = try graph.applyOps(
+                ops: [.updateBlock(id: blockId, content: editPrefix + draftText, expectedVersion: draftBaseVersion)],
                 meta: meta("edit block", group: undoGroup)
             )
-            reload()
+            if result.pagesChanged {
+                reload()
+            } else {
+                try refreshRow(blockId)
+            }
             if let saved = rows.first(where: { $0.id == blockId }) {
                 rebase(on: saved)
             }
         } catch {
-            handleWriteError(error, blockId: blockId)
+            report(error)
         }
     }
 
     public func handleReturn(at cursorOffset: Int) {
-        guard let blockId = focusedBlockId, conflict == nil else { return }
+        guard let blockId = focusedBlockId else { return }
         cancelPendingSave()
         let (before, after) = TextOffsets.split(draftText, atScalar: cursorOffset)
-        command(blockId) {
+        command {
             try graph.splitBlock(
                 blockId: blockId,
                 baseVersion: draftBaseVersion,
-                before: before,
+                before: editPrefix + before,
                 after: after,
                 meta: meta("split block")
             )
@@ -203,10 +218,10 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func handleBackspaceAtStart() {
-        guard let blockId = focusedBlockId, conflict == nil else { return }
+        guard let blockId = focusedBlockId else { return }
         cancelPendingSave()
         let text = draftText
-        command(blockId) {
+        command {
             try graph.mergeIntoPrevious(
                 blockId: blockId,
                 baseVersion: draftBaseVersion,
@@ -219,8 +234,7 @@ public final class OutlinerController: ObservableObject {
     public func indentFocusedBlock() {
         guard let blockId = focusedBlockId else { return }
         flushDraft()
-        guard conflict == nil else { return }
-        command(blockId) {
+        command {
             try graph.indentBlock(blockId: blockId, baseVersion: draftBaseVersion, meta: meta("indent block"))
         }
     }
@@ -228,33 +242,61 @@ public final class OutlinerController: ObservableObject {
     public func outdentFocusedBlock() {
         guard let blockId = focusedBlockId else { return }
         flushDraft()
-        guard conflict == nil else { return }
-        command(blockId) {
+        command {
             try graph.outdentBlock(blockId: blockId, baseVersion: draftBaseVersion, meta: meta("outdent block"))
         }
     }
 
-    public func moveFocusUp() {
+    public func moveFocusUp(column: Int) {
         guard let blockId = focusedBlockId,
               let idx = rows.firstIndex(where: { $0.id == blockId }),
               idx > 0 else {
             return
         }
         let target = rows[idx - 1]
-        focusBlock(target.id, cursorOffset: TextOffsets.length(target.renderedContent))
+        let text = BlockPresentation.editable(target.spans).text
+        focusBlock(target.id, cursorOffset: TextOffsets.offsetInLastLine(atColumn: column, in: text))
     }
 
-    public func moveFocusDown() {
+    public func moveFocusDown(column: Int) {
         guard let blockId = focusedBlockId,
               let idx = rows.firstIndex(where: { $0.id == blockId }),
               idx + 1 < rows.count else {
             return
         }
-        focusBlock(rows[idx + 1].id, cursorOffset: 0)
+        let target = rows[idx + 1]
+        let text = BlockPresentation.editable(target.spans).text
+        focusBlock(target.id, cursorOffset: TextOffsets.offsetInFirstLine(atColumn: column, in: text))
+    }
+
+    public func cycleTask(caret: Int) {
+        guard let blockId = focusedBlockId else { return }
+        flushDraft()
+        let caretFromEnd = TextOffsets.length(draftText) - caret
+        run {
+            _ = try graph.cycleTask(blockId: blockId, baseVersion: draftBaseVersion, meta: meta("cycle task"))
+            refreshFocused(caretFromEnd: caretFromEnd)
+        }
+    }
+
+    public func toggleTaskDone(_ blockId: String) {
+        if focusedBlockId == blockId {
+            flushDraft()
+        }
+        guard let row = rows.first(where: { $0.id == blockId }) else { return }
+        let baseVersion = focusedBlockId == blockId ? draftBaseVersion : row.version
+        let caretFromEnd = focusedBlockId == blockId ? 0 : nil as Int?
+        run {
+            _ = try graph.toggleTaskDone(blockId: blockId, baseVersion: baseVersion, meta: meta("toggle task"))
+            if let caretFromEnd {
+                refreshFocused(caretFromEnd: caretFromEnd)
+            } else {
+                reload()
+            }
+        }
     }
 
     public func toggleCollapse(_ blockId: String) {
-        guard resolveConflictFirst() else { return }
         leaveBlock()
         guard let row = rows.first(where: { $0.id == blockId }) else { return }
         run {
@@ -267,7 +309,6 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func undo() {
-        guard resolveConflictFirst() else { return }
         flushDraft()
         run {
             _ = try graph.undoLast(actor: actor, force: false)
@@ -276,30 +317,11 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func redo() {
-        guard resolveConflictFirst() else { return }
         flushDraft()
         run {
             _ = try graph.redoLast(actor: actor, force: false)
             afterHistoryStep()
         }
-    }
-
-    public func keepMine() {
-        guard let current = conflict,
-              let row = rows.first(where: { $0.id == current.blockId }) else { return }
-        conflict = nil
-        rebase(on: row)
-        draftText = current.mine
-        flushDraft()
-    }
-
-    public func keepTheirs() {
-        guard let current = conflict,
-              let row = rows.first(where: { $0.id == current.blockId }) else { return }
-        conflict = nil
-        rebase(on: row)
-        draftText = row.renderedContent
-        requestCursor(TextOffsets.length(draftText))
     }
 
     public func runSearch(_ query: String) {
@@ -318,7 +340,8 @@ public final class OutlinerController: ObservableObject {
             selectPage(pageId)
         case let .block(blockId, pageId, _, _, _, cursor, _):
             selectPage(pageId)
-            focusBlock(blockId, cursorOffset: Int(cursor))
+            guard let row = rows.first(where: { $0.id == blockId }) else { return }
+            focusBlock(blockId, cursorOffset: editOffset(fromRendered: Int(cursor), in: row))
         }
     }
 
@@ -334,7 +357,7 @@ public final class OutlinerController: ObservableObject {
                 }
             }
             reload()
-            detectExternalEditOfFocusedBlock()
+            adoptExternalEditOfFocusedBlock()
         } catch {
             report(error)
         }
@@ -358,7 +381,7 @@ public final class OutlinerController: ObservableObject {
     private func beginEditing(_ row: FfiFlatBlockRow) {
         focusedBlockId = row.id
         rebase(on: row)
-        draftText = row.renderedContent
+        draftText = draftBaseText
         undoGroup = newId()
     }
 
@@ -366,14 +389,11 @@ public final class OutlinerController: ObservableObject {
         cancelPendingSave()
         focusedBlockId = nil
         draftText = ""
-        conflict = nil
     }
 
     private func leaveBlock() {
         flushDraft()
-        if conflict == nil {
-            endEditing()
-        }
+        endEditing()
     }
 
     private func cancelPendingSave() {
@@ -382,28 +402,25 @@ public final class OutlinerController: ObservableObject {
         isComposingIME = false
     }
 
-    private func command(_ blockId: String, _ body: () throws -> FfiEditOutcome?) {
-        do {
+    private func command(_ body: () throws -> FfiEditOutcome?) {
+        run {
             guard let outcome = try body() else { return }
             apply(outcome)
-        } catch {
-            handleWriteError(error, blockId: blockId)
         }
     }
 
     private func apply(_ outcome: FfiEditOutcome) {
         reload()
         guard let row = rows.first(where: { $0.id == outcome.focusBlockId }) else { return }
-        let cursor = outcome.cursor.map(Int.init)
+        let cursor = outcome.cursor.map { editOffset(fromRendered: Int($0), in: row) }
         if focusedBlockId == row.id {
             rebase(on: row)
             undoGroup = newId()
-            draftText = row.renderedContent
-            requestCursor(cursor ?? TextOffsets.length(draftText))
+            draftText = draftBaseText
         } else {
             beginEditing(row)
-            requestCursor(cursor ?? TextOffsets.length(draftText))
         }
+        requestCursor(cursor ?? TextOffsets.length(draftText))
     }
 
     private func afterHistoryStep() {
@@ -414,43 +431,42 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
-    private func detectExternalEditOfFocusedBlock() {
-        guard conflict == nil,
+    private func adoptExternalEditOfFocusedBlock() {
+        guard !isDirty,
               let blockId = focusedBlockId,
               let row = rows.first(where: { $0.id == blockId }),
               row.version != draftBaseVersion else { return }
-        if isDirty {
-            conflict = EditConflict(blockId: blockId, mine: draftText, theirs: row.renderedContent)
+        rebase(on: row)
+        draftText = draftBaseText
+        requestCursor(TextOffsets.length(draftText))
+    }
+
+    private func refreshRow(_ blockId: String) throws {
+        guard let index = rows.firstIndex(where: { $0.id == blockId }) else { return }
+        if let row = try graph.blockRow(blockId: blockId) {
+            rows[index] = row
         } else {
-            rebase(on: row)
-            draftText = row.renderedContent
-            requestCursor(TextOffsets.length(draftText))
+            reload()
         }
     }
 
-    private func resolveConflictFirst() -> Bool {
-        guard conflict != nil else { return true }
-        errorMessage = "Resolve the edit conflict first: keep your text or use theirs."
-        return false
+    private func refreshFocused(caretFromEnd: Int) {
+        reload()
+        guard let blockId = focusedBlockId, let row = rows.first(where: { $0.id == blockId }) else { return }
+        rebase(on: row)
+        draftText = draftBaseText
+        requestCursor(max(0, TextOffsets.length(draftText) - caretFromEnd))
     }
 
     private func rebase(on row: FfiFlatBlockRow) {
+        let editable = BlockPresentation.editable(row.spans)
         draftBaseVersion = row.version
-        draftBaseText = row.renderedContent
+        draftBaseText = editable.text
+        editPrefix = editable.prefix
     }
 
-    private func handleWriteError(_ error: Error, blockId: String) {
-        if case let FfiError.Core(code, _) = error, code == "version_mismatch" {
-            let mine = draftText
-            reload()
-            if let row = rows.first(where: { $0.id == blockId }) {
-                focusedBlockId = blockId
-                draftText = mine
-                conflict = EditConflict(blockId: blockId, mine: mine, theirs: row.renderedContent)
-            }
-            return
-        }
-        report(error)
+    private func editOffset(fromRendered offset: Int, in row: FfiFlatBlockRow) -> Int {
+        max(0, offset - TextOffsets.length(BlockPresentation.editable(row.spans).prefix))
     }
 
     private func run(_ body: () throws -> Void) {

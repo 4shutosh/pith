@@ -10,64 +10,27 @@ struct ContentView: View {
     private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: Binding(
-                get: { controller.selectedPageId },
-                set: { newId in
-                    if let id = newId {
-                        controller.selectPage(id)
-                    }
-                }
-            )) {
-                Section("Quick") {
-                    Button {
-                        controller.openTodayJournal()
-                    } label: {
-                        Label("Today's Journal", systemImage: "calendar")
-                    }
-                    .buttonStyle(.plain)
+        HStack(spacing: 0) {
+            Sidebar(controller: controller, showSearch: $showSearch)
+                .frame(width: 244)
 
-                    Button {
-                        showSearch = true
-                    } label: {
-                        Label("Search (⌘K)", systemImage: "magnifyingglass")
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Section("Pages (\(controller.pages.count))") {
-                    ForEach(controller.pages, id: \.id) { page in
-                        Label(
-                            page.title,
-                            systemImage: page.journalDay != nil ? "calendar.day.timeline.left" : "doc.text"
-                        )
-                        .tag(page.id)
-                    }
+            Group {
+                if controller.isShowingAllPages {
+                    AllPagesView(controller: controller)
+                } else {
+                    OutlinerView(controller: controller)
                 }
             }
-            .navigationTitle("pith")
-        } detail: {
-            OutlinerView(controller: controller)
-                .toolbar {
-                    ToolbarItemGroup {
-                        Button {
-                            controller.undo()
-                        } label: {
-                            Label("Undo", systemImage: "arrow.uturn.backward")
-                        }
-                        Button {
-                            controller.redo()
-                        } label: {
-                            Label("Redo", systemImage: "arrow.uturn.forward")
-                        }
-                        Button {
-                            showSearch = true
-                        } label: {
-                            Label("Search", systemImage: "magnifyingglass")
-                        }
-                    }
-                }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.panelBorder, lineWidth: 1))
+            .padding(.top, 8)
+            .padding(.trailing, 8)
+            .padding(.bottom, 8)
         }
+        .background(Theme.window)
+        .ignoresSafeArea()
         .sheet(isPresented: $showSearch) {
             QuickSearchSheet(controller: controller, isPresented: $showSearch)
         }
@@ -91,6 +54,7 @@ struct PithMacApp: App {
     @State private var showSearch = false
 
     init() {
+        Typography.registerBundledFonts()
         let dbPath = ProcessInfo.processInfo.environment["PITH_DB"]
             ?? (NSHomeDirectory() + "/.pith/pith.db")
         let dir = (dbPath as NSString).deletingLastPathComponent
@@ -110,30 +74,24 @@ struct PithMacApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(controller: controller, showSearch: $showSearch)
-                .frame(minWidth: 760, minHeight: 520)
+                .frame(minWidth: 900, minHeight: 560)
+                .preferredColorScheme(.dark)
         }
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .undoRedo) {
-                Button("Undo") {
-                    controller.undo()
-                }
-                .keyboardShortcut("z", modifiers: .command)
-
-                Button("Redo") {
-                    controller.redo()
-                }
-                .keyboardShortcut("z", modifiers: [.command, .shift])
+                Button("Undo") { controller.undo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                Button("Redo") { controller.redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandMenu("Navigate") {
-                Button("Quick Search") {
-                    showSearch = true
-                }
-                .keyboardShortcut("k", modifiers: .command)
-
-                Button("Today's Journal") {
-                    controller.openTodayJournal()
-                }
-                .keyboardShortcut("j", modifiers: .command)
+                Button("Search") { showSearch = true }
+                    .keyboardShortcut("k", modifiers: .command)
+                Button("Today") { controller.openTodayJournal() }
+                    .keyboardShortcut("j", modifiers: .command)
+                Button("All pages") { controller.showAllPages() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
             }
         }
     }

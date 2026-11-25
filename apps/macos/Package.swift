@@ -15,7 +15,8 @@ let package = Package(
             dependencies: [
                 .product(name: "PithCore", package: "PithCore")
             ],
-            path: "Sources/PithMacCore"
+            path: "Sources/PithMacCore",
+            resources: [.copy("Resources/Fonts")]
         ),
         .executableTarget(
             name: "PithMacApp",

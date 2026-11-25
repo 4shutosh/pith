@@ -3,10 +3,10 @@ import PithCore
 import SwiftUI
 
 public enum InlineFormatter {
-    public static func format(_ spans: [FfiSpan]) -> AttributedString {
+    public static func format(_ spans: [FfiSpan], muted: Bool = false) -> AttributedString {
         var result = AttributedString()
         for span in spans {
-            result.append(styled(span))
+            result.append(styled(span, muted: muted))
         }
         return result
     }
@@ -16,35 +16,35 @@ public enum InlineFormatter {
         return String(url.path.dropFirst())
     }
 
-    private static func styled(_ span: FfiSpan) -> AttributedString {
+    private static func styled(_ span: FfiSpan, muted: Bool) -> AttributedString {
         switch span {
         case let .text(text):
             return AttributedString(text)
         case let .code(text):
             var code = AttributedString(text)
-            code.font = .system(.body, design: .monospaced)
-            code.backgroundColor = Color.secondary.opacity(0.14)
+            code.font = Typography.mono(13.5)
+            code.backgroundColor = Theme.elevated
             return code
-        case let .task(state):
-            var badge = AttributedString(state)
-            badge.font = .system(.caption, design: .monospaced).bold()
-            badge.foregroundColor = state == "DONE" ? .secondary : .orange
-            return badge
-        case let .pageLink(pageId, title):
-            return link(title, pageId: pageId, color: .accentColor)
-        case let .tag(pageId, title):
-            return link("#\(title)", pageId: pageId, color: .teal)
-        case let .blockRef(_, text):
+        case let .task(state, _):
+            var label = AttributedString(state)
+            label.foregroundColor = Theme.textTertiary
+            return label
+        case let .pageLink(pageId, title, _):
+            return link(title, pageId: pageId, muted: muted)
+        case let .tag(pageId, title, _):
+            var tag = link("#\(title)", pageId: pageId, muted: muted)
+            tag.backgroundColor = Theme.accent.opacity(0.14)
+            return tag
+        case let .blockRef(_, text, _):
             var ref = AttributedString(text)
-            ref.underlineStyle = .single
-            ref.foregroundColor = .secondary
+            ref.underlineStyle = Text.LineStyle(pattern: .dash, color: Theme.bullet)
             return ref
         }
     }
 
-    private static func link(_ display: String, pageId: String?, color: Color) -> AttributedString {
+    private static func link(_ display: String, pageId: String?, muted: Bool) -> AttributedString {
         var span = AttributedString(display)
-        span.foregroundColor = color
+        span.foregroundColor = muted ? Theme.textTertiary : Theme.link
         if let pageId, let url = URL(string: "pith://page/\(pageId)") {
             span.link = url
         }
