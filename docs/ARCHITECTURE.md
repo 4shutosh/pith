@@ -54,8 +54,9 @@ blocks_fts USING fts5(text, page_title)   -- see D13
 txns       (id BLOB PK /* uuidv7 */, ts, origin TEXT /* user|agent|import|undo|sync */,
             actor TEXT /* 'me' | 'agent:claude' */, session TEXT NULL, summary TEXT,
             undoes BLOB NULL /* txn this one reverts */)
-ops        (txn_id BLOB, seq INTEGER, forward JSON, inverse JSON)
-txn_blocks (txn_id BLOB, block_id BLOB)   -- which blocks/pages each txn touched
+  INDEX (undoes)
+ops        (txn_id BLOB, seq INTEGER, forward JSON, inverse JSON, PRIMARY KEY (txn_id, seq))
+txn_blocks (txn_id BLOB, block_id BLOB)   -- which blocks/pages each txn touched (page ids share the column)
   INDEX (block_id, txn_id)                -- undo conflict checks, per-block history
 ```
 
@@ -103,9 +104,12 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
   - indent, outdent and move up/down become `move_block`
 - **View-state op** `set_collapsed`: persisted and synced, but it does not bump `version` and is not recorded for undo.
 
-**Undo** applies the `inverse` ops of txn T as a new txn with `origin=undo, undoes=T`. Before applying, it uses `txn_blocks` to check for conflicts. Undo reports a conflict (`--force` overrides) instead of clobbering when:
-- a later txn by a *different* actor touched any block T touched, or
-- a restored page's title is now taken by another page.
+**Undo** applies the `inverse` ops of txn T as a new txn with `origin=undo, undoes=T`. Its checks and its write run in one `BEGIN IMMEDIATE` transaction, so two processes can't both undo T. Only undo can create `origin=undo` txns; `apply_ops` rejects that origin from callers.
+
+- T can't be undone while it is undone. Undoing the undo txn is redo, after which T can be undone again. "Undone" is derived from the append-only `undoes` chain; history rows are never mutated.
+- Undo reports a conflict (`--force` overrides) instead of clobbering when:
+  - a later txn by a *different* actor touched any block T touched, or
+  - a restored page's title is now taken by another page.
 
 **Editor input:** keystrokes do not each become a txn.
 - The editor debounces on idle.
@@ -155,19 +159,28 @@ There is one typed API in `pith-core`. The CLI and MCP are thin wrappers generat
 
 ---
 
-## 5. Crates
+## 5. Repository layout
+
+One monorepo. A Cargo workspace at the root holds the Rust code, and each native app is a self-contained project under `apps/` that consumes `pith-ffi`.
 
 ```
-crates/
-  pith-core    schema+migrations, ops/apply/inverse, parser, queries, undo, search
-  pith-bench   synthetic 100k-block graph; benches gate CI on the README budgets
-  pith-cli     `pith` binary
-  pith-mcp     MCP server over stdio
-  pith-md      Logseq import, Markdown mirror/export, round-trip tests
-  pith-ffi     UniFFI bindings for native UIs (Android / macOS)
+crates/        folder → package
+  core/        pith-core    schema+migrations, ops/apply/inverse, parser, queries, undo, search
+  bench/       pith-bench   synthetic 100k-block graph; benches gate CI on the README budgets
+  cli/         pith-cli     `pith` binary
+  mcp/         pith-mcp     MCP server over stdio
+  md/          pith-md      Logseq import, Markdown mirror/export, round-trip tests
+  ffi/         pith-ffi     UniFFI bindings for native UIs
+apps/
+  android/     Gradle project (Jetpack Compose); loads pith-ffi's generated Kotlin + .so
+  macos/       Xcode / SwiftPM project (SwiftUI); loads pith-ffi's generated Swift + XCFramework
+fixtures/      small sample graphs used by tests
+docs/          architecture and research
 ```
 
-Crates are added when there is code to put in them; empty crates are not scaffolded.
+Dependency direction is one-way: everything depends on `pith-core`; `pith-core` depends on no other workspace crate; apps depend only on `pith-ffi`.
+
+Directories and crates are added when there is code to put in them; empty placeholders are not scaffolded.
 
 ---
 

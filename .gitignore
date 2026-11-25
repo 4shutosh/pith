@@ -1,0 +1,13 @@
+# Rust
+/target/
+
+# Local-only planning (not published)
+/docs/ROADMAP.md
+
+# Local tool settings
+.claude/settings.local.json
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
