@@ -19,14 +19,14 @@ A new value goes into one of these first, then gets used. Never write a raw numb
 ## Layout
 
 - **Three zones.** A 38 pt title-bar band, a 216 pt sidebar with a 1 pt divider, and the editor pane.
-- **One column.** Content is at most 680 pt wide, centred in the pane beside the sidebar (not in the window), with at least 64 pt either side. Every screen in the pane (pages, journals, All pages) uses `EditorLayout`.
+- **One column.** Content is at most 680 pt wide, centred in the pane beside the sidebar (not in the window), with at least 64 pt either side. Every screen in the pane uses `EditorLayout`. Table-like screens (All pages) may widen to `directoryWidth` (820 pt) through the same function; nothing computes its own layout.
 - **Content starts 58 pt below the window top.**
-- **Hanging bullets.** Block rows hang a 40 pt gutter (14 disclosure, 18 bullet, 8 gap) left of the column, so block text starts on the column edge.
+- **Bullets inside the column.** A block row is a 14 pt disclosure, an 18 pt bullet column, an 8 pt gap and the text. Only the hover-only disclosure arrow sits in the margin; the bullet column starts on the column edge, so bullets line up under the first letter of the title and nesting steps inward 24 pt.
 - **Window controls.** Title-bar buttons sit 78 pt from the left and are centred on the traffic lights at y = 16. Anything always available (sidebar toggle, theme) lives there, not inside the sidebar.
 
 ## Alignment
 
-- **One left edge per column.** In the pane: page title, subtitle, block text, dividers, day headings, reference cards and list-row content all start on the column edge. In the sidebar: every label starts at x 44 (row inset 10, icon 15, gap 9), and section labels start on the icon column.
+- **One left edge per column.** In the pane: page title, subtitle, top-level bullets, dividers, day headings, reference cards and list-row content all start on the column edge. In the sidebar: every label starts at x 44 (row inset 10, icon 15, gap 9), and section labels start on the icon column.
 - **Backgrounds bleed; content doesn't move.** Hover, selection and list-row fills extend past the edge (6 pt for blocks, 12 pt for list rows) so the text inside stays on the shared edge.
 - **Right edges match too.** Header actions, counts and the end of dividers line up with the column's right edge.
 - **Vertical centres.** Icons, bullets and controls are centred on the line they belong to. Check them against text, not against frames.

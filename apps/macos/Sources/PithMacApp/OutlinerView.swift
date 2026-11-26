@@ -211,7 +211,7 @@ struct OutlinerView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.leading, OutlineRow.disclosureWidth - OutlineRow.gutter)
+
     }
 
     private var journalStream: some View {
@@ -251,7 +251,7 @@ struct OutlinerView: View {
             completion: isFocused ? controller.completion : nil,
             controller: controller
         )
-        .padding(.leading, -OutlineRow.gutter)
+        .padding(.leading, -OutlineRow.disclosureWidth)
         .id(row.id)
     }
 
