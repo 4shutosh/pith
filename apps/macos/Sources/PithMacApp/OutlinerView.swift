@@ -10,7 +10,7 @@ struct OutlinerView: View {
     @State private var keyMonitor: Any?
     @State private var isRenaming = false
     @State private var renameDraft = ""
-    @State private var confirmDelete = false
+    @FocusState private var titleFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -186,13 +186,11 @@ struct OutlinerView: View {
         }
         .onChange(of: controller.selectedPageId) { _ in
             isRenaming = false
-            confirmDelete = false
         }
-        .confirmationDialog("Delete page “\(controller.pageTitle ?? "")”?", isPresented: $confirmDelete) {
-            Button("Delete Page", role: .destructive) {
-                controller.deleteCurrentPage()
-            }
-            Button("Cancel", role: .cancel) {}
+        .onChange(of: controller.renameRequest) { _ in
+            guard let page = controller.currentPage, page.journalDay == nil else { return }
+            renameDraft = page.title
+            isRenaming = true
         }
     }
 
@@ -261,6 +259,8 @@ struct OutlinerView: View {
             if isRenaming {
                 TextField("Page title", text: $renameDraft)
                     .textFieldStyle(.plain)
+                    .focused($titleFieldFocused)
+                    .onAppear { titleFieldFocused = true }
                     .font(Typography.ui(28, .semibold))
                     .foregroundColor(Theme.textStrong)
                     .onSubmit {
@@ -284,58 +284,7 @@ struct OutlinerView: View {
                     }
             }
 
-            Spacer(minLength: 8)
-
-            if controller.isShowingJournal {
-                HStack(spacing: 4) {
-                    PageActionButton(label: "‹", help: "Previous day (⌥⌘[)") {
-                        controller.stepJournalDay(-1)
-                    }
-                    if !controller.isShowingToday {
-                        PageActionButton(label: "Today", help: "Jump to today (⌘J)") {
-                            controller.openTodayJournal()
-                        }
-                    }
-                    PageActionButton(label: "›", help: "Next day (⌥⌘])") {
-                        controller.stepJournalDay(1)
-                    }
-                }
-            }
-
-            if let page = controller.currentPage {
-                Button {
-                    controller.toggleFavorite(page.id)
-                } label: {
-                    StarIcon(filled: page.favorite)
-                        .foregroundColor(page.favorite ? Theme.accent : Theme.textTertiary)
-                        .frame(width: 26, height: 26)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(page.favorite ? "Remove from favorites" : "Add to favorites")
-
-                if page.journalDay == nil {
-                    Menu {
-                        Button("Rename") {
-                            renameDraft = page.title
-                            isRenaming = true
-                        }
-                        Divider()
-                        Button("Delete Page", role: .destructive) {
-                            confirmDelete = true
-                        }
-                    } label: {
-                        Text("···")
-                            .font(Typography.ui(13, .semibold))
-                            .foregroundColor(Theme.textTertiary)
-                            .frame(width: 26, height: 26)
-                            .contentShape(Rectangle())
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                }
-            }
+            Spacer(minLength: 0)
         }
     }
 
@@ -349,28 +298,6 @@ struct OutlinerView: View {
             parts.append(count == 1 ? "1 linked reference" : "\(count) linked references")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-}
-
-private struct PageActionButton: View {
-    let label: String
-    let help: String
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(Typography.ui(12, .medium))
-                .foregroundColor(isHovered ? Theme.textPrimary : Theme.textTertiary)
-                .padding(.horizontal, 7)
-                .frame(height: 24)
-                .background(RoundedRectangle(cornerRadius: 5).fill(isHovered ? Theme.hover : Color.clear))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        .onHover { isHovered = $0 }
     }
 }
 
@@ -489,6 +416,7 @@ private struct OutlineRow: View {
                     .opacity(isHovered ? 1 : 0)
             }
             .buttonStyle(.plain)
+            .cursor(.pointingHand)
             .accessibilityLabel(row.collapsed ? "Expand" : "Collapse")
         } else {
             Color.clear
@@ -506,6 +434,7 @@ private struct OutlineRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .cursor(.pointingHand)
         } else {
             Button {
                 controller.zoom(into: row.id)
@@ -524,6 +453,7 @@ private struct OutlineRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .cursor(.pointingHand)
             .accessibilityLabel(row.hasChildren && row.collapsed ? "Zoom into collapsed block" : "Zoom into block")
         }
     }
@@ -600,6 +530,7 @@ private struct BacklinkCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .cursor(.pointingHand)
         .onHover { isHovered = $0 }
     }
 }
@@ -657,6 +588,7 @@ private struct TrailButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .cursor(.pointingHand)
         .onHover { isHovered = $0 }
     }
 }
@@ -680,6 +612,7 @@ private struct JournalHeading: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .cursor(.pointingHand)
             .onHover { isHovered = $0 }
             .help("Open \(title)")
             .padding(.bottom, 16)

@@ -36,26 +36,6 @@ struct TodayIcon: View {
     }
 }
 
-struct PagesIcon: View {
-    var body: some View {
-        Canvas { context, size in
-            let ys: [CGFloat] = [3.5, 7, 10.5]
-            let widths: [CGFloat] = [10, 10, 6.5]
-            for (y, width) in zip(ys, widths) {
-                var line = Path()
-                line.move(to: CGPoint(x: 2, y: y))
-                line.addLine(to: CGPoint(x: 2 + width, y: y))
-                context.stroke(
-                    line,
-                    with: .foreground,
-                    style: StrokeStyle(lineWidth: 1.25, lineCap: .round)
-                )
-            }
-        }
-        .frame(width: 14, height: 14)
-    }
-}
-
 struct SearchIcon: View {
     var size: CGFloat = 14
 
@@ -237,17 +217,36 @@ struct MoonIcon: View {
     }
 }
 
-struct DocIcon: View {
+struct PagesIcon: View {
     var body: some View {
         Canvas { context, size in
-            let rect = CGRect(x: 2.5, y: 1.5, width: size.width - 5, height: size.height - 3)
-            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .foreground, lineWidth: 1.2)
-            var lines = Path()
-            for y in [rect.minY + 4, rect.minY + 6.8] {
-                lines.move(to: CGPoint(x: rect.minX + 2.5, y: y))
-                lines.addLine(to: CGPoint(x: rect.maxX - 2.5, y: y))
+            let ys: [CGFloat] = [3.5, 7, 10.5]
+            let widths: [CGFloat] = [10, 10, 6.5]
+            for (y, width) in zip(ys, widths) {
+                var line = Path()
+                line.move(to: CGPoint(x: 2, y: y))
+                line.addLine(to: CGPoint(x: 2 + width, y: y))
+                context.stroke(
+                    line,
+                    with: .foreground,
+                    style: StrokeStyle(lineWidth: 1.25, lineCap: .round)
+                )
             }
-            context.stroke(lines, with: .foreground, style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
+struct ClockIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let rect = CGRect(x: 1.5, y: 1.5, width: size.width - 3, height: size.height - 3)
+            context.stroke(Path(ellipseIn: rect), with: .foreground, lineWidth: 1.2)
+            var hands = Path()
+            hands.move(to: CGPoint(x: rect.midX, y: rect.minY + 3))
+            hands.addLine(to: CGPoint(x: rect.midX, y: rect.midY))
+            hands.addLine(to: CGPoint(x: rect.midX + 2.5, y: rect.midY + 1.5))
+            context.stroke(hands, with: .foreground, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
         }
         .frame(width: 14, height: 14)
     }

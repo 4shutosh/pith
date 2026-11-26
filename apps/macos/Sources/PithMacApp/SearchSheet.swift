@@ -6,6 +6,7 @@ import SwiftUI
 struct QuickSearchSheet: View {
     @ObservedObject var controller: OutlinerController
     @Binding var isPresented: Bool
+    let onCommand: (PaletteCommand) -> Void
     @State private var query: String = ""
     @State private var selected: Int = 0
     @State private var keyMonitor: Any?
@@ -26,12 +27,17 @@ struct QuickSearchSheet: View {
         pageHits + blockHits
     }
 
+    private var commands: [PaletteItem] {
+        let matches = controller.paletteItems(matching: trimmedQuery)
+        return trimmedQuery.isEmpty ? matches : Array(matches.prefix(5))
+    }
+
     private var offersCreate: Bool {
         SearchPresentation.offersCreatePage(query: query, hits: controller.searchHits)
     }
 
     private var choiceCount: Int {
-        orderedHits.count + (offersCreate ? 1 : 0)
+        commands.count + orderedHits.count + (offersCreate ? 1 : 0)
     }
 
     var body: some View {
@@ -39,7 +45,7 @@ struct QuickSearchSheet: View {
             HStack(spacing: 12) {
                 SearchIcon(size: 15)
                     .foregroundColor(Theme.textTertiary)
-                TextField("Search or create a page", text: $query)
+                TextField("Search, create a page, or run a command", text: $query)
                     .textFieldStyle(.plain)
                     .font(Typography.ui(17))
                     .foregroundColor(Theme.textStrong)
@@ -61,24 +67,33 @@ struct QuickSearchSheet: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
+                        if !commands.isEmpty {
+                            GroupLabel(title: "Commands")
+                            ForEach(Array(commands.enumerated()), id: \.offset) { index, item in
+                                CommandRow(item: item, isSelected: selected == index) { run(item) }
+                                    .id(index)
+                            }
+                        }
                         if !pageHits.isEmpty {
                             GroupLabel(title: "Pages")
                             ForEach(Array(pageHits.enumerated()), id: \.offset) { index, hit in
-                                HitRow(hit: hit, isSelected: selected == index) { open(hit) }
-                                    .id(index)
+                                let position = commands.count + index
+                                HitRow(hit: hit, isSelected: selected == position) { open(hit) }
+                                    .id(position)
                             }
                         }
                         if !blockHits.isEmpty {
                             GroupLabel(title: "Blocks")
                             ForEach(Array(blockHits.enumerated()), id: \.offset) { index, hit in
-                                let position = pageHits.count + index
+                                let position = commands.count + pageHits.count + index
                                 HitRow(hit: hit, isSelected: selected == position) { open(hit) }
                                     .id(position)
                             }
                         }
                         if offersCreate {
-                            CreatePageRow(title: trimmedQuery, isSelected: selected == orderedHits.count, action: createPage)
-                                .id(orderedHits.count)
+                            let position = commands.count + orderedHits.count
+                            CreatePageRow(title: trimmedQuery, isSelected: selected == position, action: createPage)
+                                .id(position)
                         }
                     }
                     .padding(6)
@@ -135,11 +150,19 @@ struct QuickSearchSheet: View {
     }
 
     private func openSelected() {
-        if orderedHits.indices.contains(selected) {
-            open(orderedHits[selected])
+        let hitIndex = selected - commands.count
+        if commands.indices.contains(selected) {
+            run(commands[selected])
+        } else if orderedHits.indices.contains(hitIndex) {
+            open(orderedHits[hitIndex])
         } else if !trimmedQuery.isEmpty {
             createPage()
         }
+    }
+
+    private func run(_ item: PaletteItem) {
+        isPresented = false
+        onCommand(item.command)
     }
 
     private func createPage() {
@@ -200,6 +223,7 @@ private struct HitRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .cursor(.pointingHand)
         .onHover { isHovered = $0 }
     }
 
@@ -246,6 +270,7 @@ private struct CreatePageRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .cursor(.pointingHand)
         .onHover { isHovered = $0 }
     }
 }
@@ -265,5 +290,35 @@ private struct KeyHint: View {
                 .font(Typography.ui(12))
                 .foregroundColor(Theme.textTertiary)
         }
+    }
+}
+
+private struct CommandRow: View {
+    let item: PaletteItem
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(item.title)
+                    .font(Typography.ui(TypeScale.listRow))
+                    .foregroundColor(Theme.textPrimary)
+                Spacer()
+                if let shortcut = item.shortcut {
+                    Text(shortcut)
+                        .font(Typography.ui(TypeScale.meta))
+                        .foregroundColor(Theme.textTertiary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(RoundedRectangle(cornerRadius: 8).fill(isSelected || isHovered ? Theme.rowSelected : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .cursor(.pointingHand)
+        .onHover { isHovered = $0 }
     }
 }

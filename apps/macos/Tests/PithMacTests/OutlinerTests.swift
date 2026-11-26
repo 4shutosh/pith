@@ -444,7 +444,8 @@ final class OutlinerTests: XCTestCase {
         XCTAssertEqual(controller.pageTitle, yesterday)
 
         controller.selectPage(alphaId)
-        controller.deleteCurrentPage()
+        controller.perform(.deletePage)
+        controller.confirmPendingDelete()
         XCTAssertFalse(controller.pages.contains { $0.id == alphaId })
     }
 

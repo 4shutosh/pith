@@ -37,6 +37,7 @@ struct CompletionList: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .cursor(.pointingHand)
                 .focusable(false)
             }
         }

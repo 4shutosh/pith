@@ -70,10 +70,24 @@ struct ContentView: View {
         .background(Theme.canvas)
         .ignoresSafeArea()
         .sheet(isPresented: $showSearch) {
-            QuickSearchSheet(controller: controller, isPresented: $showSearch)
+            QuickSearchSheet(controller: controller, isPresented: $showSearch) { command in
+                CommandRunner.run(command, controller: controller, showSidebar: $showSidebar, themeMode: $themeMode)
+            }
         }
         .onReceive(timer) { _ in
             controller.pollExternalChanges()
+        }
+        .confirmationDialog(
+            "Delete page “\(controller.pendingPageDelete?.title ?? "")”?",
+            isPresented: Binding(
+                get: { controller.pendingPageDelete != nil },
+                set: { if !$0 { controller.pendingPageDelete = nil } }
+            )
+        ) {
+            Button("Delete Page", role: .destructive) { controller.confirmPendingDelete() }
+            Button("Cancel", role: .cancel) { controller.pendingPageDelete = nil }
+        } message: {
+            Text("You can undo this with ⌘Z.")
         }
         .task {
             await DesignSnapshot.run(
@@ -141,6 +155,19 @@ struct PithMacApp: App {
                 Button("Redo") { controller.redo() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
             }
+            CommandMenu("Page") {
+                Button(controller.currentPage?.favorite == true ? "Remove from Favorites" : "Add to Favorites") {
+                    controller.perform(.toggleFavorite)
+                }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(!controller.isAvailable(.toggleFavorite))
+                Button("Rename Page") { controller.perform(.renamePage) }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(!controller.isAvailable(.renamePage))
+                Divider()
+                Button("Delete Page…") { controller.perform(.deletePage) }
+                    .disabled(!controller.isAvailable(.deletePage))
+            }
             CommandMenu("Navigate") {
                 Button("Search") { showSearch = true }
                     .keyboardShortcut("k", modifiers: .command)
@@ -155,10 +182,12 @@ struct PithMacApp: App {
                     .keyboardShortcut("]", modifiers: .command)
                     .disabled(!controller.canGoForward)
                 Divider()
-                Button("Previous Day") { controller.stepJournalDay(-1) }
+                Button("Previous Day") { controller.perform(.previousDay) }
                     .keyboardShortcut("[", modifiers: [.command, .option])
-                Button("Next Day") { controller.stepJournalDay(1) }
+                    .disabled(!controller.isAvailable(.previousDay))
+                Button("Next Day") { controller.perform(.nextDay) }
                     .keyboardShortcut("]", modifiers: [.command, .option])
+                    .disabled(!controller.isAvailable(.nextDay))
                 Divider()
                 Button(showSidebar ? "Hide Sidebar" : "Show Sidebar") {
                     withAnimation(.easeOut(duration: 0.16)) {

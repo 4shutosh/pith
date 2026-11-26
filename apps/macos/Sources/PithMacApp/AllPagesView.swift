@@ -12,7 +12,7 @@ struct PageListView: View {
     @State private var tab: PageDirectoryTab = .pages
     @State private var sort: PageDirectorySort = .updated
     @State private var query: String = ""
-    @State private var highlightedIndex: Int = 0
+    @State private var highlightedIndex: Int?
     @State private var renamingPageId: String?
     @State private var renameDraft: String = ""
     @State private var keyMonitor: Any?
@@ -75,8 +75,15 @@ struct PageListView: View {
                                         },
                                         onCancelRename: { renamingPageId = nil },
                                         onDelete: summary.page.journalDay == nil
-                                            ? { controller.deletePage(summary.page.id) }
-                                            : nil
+                                            ? { controller.requestDelete(summary.page.id) }
+                                            : nil,
+                                        onHover: { inside in
+                                            if inside {
+                                                highlightedIndex = index
+                                            } else if highlightedIndex == index {
+                                                highlightedIndex = nil
+                                            }
+                                        }
                                     )
                                     .id(summary.page.id)
                                 }
@@ -99,14 +106,14 @@ struct PageListView: View {
                 }
             }
             .onChange(of: highlightedIndex) { idx in
-                if summaries.indices.contains(idx) {
+                if let idx, summaries.indices.contains(idx) {
                     proxy.scrollTo(summaries[idx].page.id)
                 }
             }
         }
-        .onChange(of: query) { _ in highlightedIndex = 0 }
-        .onChange(of: tab) { _ in highlightedIndex = 0 }
-        .onChange(of: sort) { _ in highlightedIndex = 0 }
+        .onChange(of: query) { _ in highlightedIndex = nil }
+        .onChange(of: tab) { _ in highlightedIndex = nil }
+        .onChange(of: sort) { _ in highlightedIndex = nil }
         .onAppear { installKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
     }
@@ -160,6 +167,7 @@ struct PageListView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .cursor(.pointingHand)
             .help("Create or open page (⌘K)")
         }
     }
@@ -206,6 +214,7 @@ struct PageListView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .cursor(.pointingHand)
         }
     }
 
@@ -219,7 +228,7 @@ struct PageListView: View {
                 .frame(width: 58, alignment: .trailing)
             Text("UPDATED")
                 .frame(width: 72, alignment: .trailing)
-            Spacer().frame(width: 48)
+            Spacer().frame(width: 28)
         }
         .font(Typography.ui(TypeScale.label, .medium))
         .tracking(0.5)
@@ -253,8 +262,8 @@ struct PageListView: View {
 
     private func openHighlightedOrCreate() {
         let list = summaries
-        if list.indices.contains(highlightedIndex) {
-            controller.selectPage(list[highlightedIndex].page.id)
+        if let index = highlightedIndex, list.indices.contains(index) {
+            controller.selectPage(list[index].page.id)
         } else if offersCreate {
             controller.openPageByTitle(trimmedQuery)
         }
@@ -296,11 +305,11 @@ struct PageListView: View {
         switch (event.keyCode, arrowFlags) {
         case (126, []):
             guard count > 0 else { return false }
-            highlightedIndex = max(0, highlightedIndex - 1)
+            highlightedIndex = max(0, (highlightedIndex ?? count) - 1)
             return true
         case (125, []):
             guard count > 0 else { return false }
-            highlightedIndex = min(count - 1, highlightedIndex + 1)
+            highlightedIndex = min(count - 1, (highlightedIndex ?? -1) + 1)
             return true
         case (36, []), (76, []):
             guard !filterFocused else { return false }
@@ -324,7 +333,7 @@ private struct PageDirectoryRow: View {
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
     let onDelete: (() -> Void)?
-    @State private var isHovered = false
+    let onHover: (Bool) -> Void
 
     private var page: FfiPage { summary.page }
 
@@ -346,11 +355,11 @@ private struct PageDirectoryRow: View {
                                 .foregroundColor(Theme.textTertiary)
                         }
                         Text(page.title)
-                            .font(Typography.ui(TypeScale.listRow, isHovered || isHighlighted ? .medium : .regular))
+                            .font(Typography.ui(TypeScale.listRow, isHighlighted ? .medium : .regular))
                             .foregroundColor(
                                 summary.blockCount == 0
                                     ? Theme.textSecondary
-                                    : (isHovered || isHighlighted ? Theme.textStrong : Theme.textPrimary)
+                                    : (isHighlighted ? Theme.textStrong : Theme.textPrimary)
                             )
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -367,6 +376,7 @@ private struct PageDirectoryRow: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .cursor(.pointingHand)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -393,42 +403,21 @@ private struct PageDirectoryRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .opacity(page.favorite || isHovered ? 1 : 0)
+                .cursor(.pointingHand)
+                .opacity(page.favorite || isHighlighted ? 1 : 0)
                 .help(page.favorite ? "Remove from Favorites" : "Add to Favorites")
 
-                if onDelete != nil {
-                    Menu {
-                        Button("Rename", action: onBeginRename)
-                        Button(page.favorite ? "Remove from Favorites" : "Add to Favorites", action: onToggleFavorite)
-                        if let onDelete {
-                            Divider()
-                            Button("Delete Page", role: .destructive, action: onDelete)
-                        }
-                    } label: {
-                        Text("···")
-                            .font(Typography.ui(12, .semibold))
-                            .foregroundColor(Theme.textTertiary)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .opacity(isHovered ? 1 : 0)
-                } else {
-                    Spacer().frame(width: 22)
-                }
             }
-            .frame(width: 48, alignment: .trailing)
+            .frame(width: 28, alignment: .trailing)
         }
         .padding(.horizontal, 10)
         .frame(height: 31)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isHovered ? Theme.hover : (isHighlighted ? Theme.selected.opacity(0.65) : Color.clear))
+                .fill(isHighlighted ? Theme.hover : Color.clear)
         )
         .padding(.horizontal, -10)
-        .onHover { isHovered = $0 }
+        .onHover(perform: onHover)
         .contextMenu {
             Button("Open", action: onOpen)
             Button(page.favorite ? "Remove from Favorites" : "Add to Favorites", action: onToggleFavorite)
@@ -467,6 +456,7 @@ private struct FilterChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .cursor(.pointingHand)
         .onHover { isHovered = $0 }
     }
 }
@@ -495,6 +485,7 @@ private struct CreateInlineRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .cursor(.pointingHand)
         .onHover { isHovered = $0 }
     }
 }

@@ -24,6 +24,8 @@ public final class OutlinerController: ObservableObject {
     @Published public var pages: [FfiPage] = []
     @Published public var pageSummaries: [FfiPageSummary] = []
     @Published public var journals: [FfiPage] = []
+    @Published public private(set) var renameRequest: UInt64 = 0
+    @Published public var pendingPageDelete: FfiPage?
     @Published public private(set) var isJournalStream: Bool = false
     @Published public private(set) var journalSections: [JournalSection] = []
     @Published public private(set) var hasOlderJournals: Bool = false
@@ -350,11 +352,6 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
-    public func deleteCurrentPage() {
-        guard let page = currentPage else { return }
-        deletePage(page.id)
-    }
-
     public func deletePage(_ pageId: String) {
         guard let page = pages.first(where: { $0.id == pageId }) else { return }
         let wasCurrent = selectedPageId == page.id
@@ -381,6 +378,76 @@ public final class OutlinerController: ObservableObject {
             } else {
                 reload()
             }
+        }
+    }
+
+    public var paletteItems: [PaletteItem] {
+        PaletteCommand.allCases.compactMap { command in
+            guard isAvailable(command) else { return nil }
+            return PaletteItem(command: command, title: title(for: command))
+        }
+    }
+
+    public func paletteItems(matching query: String) -> [PaletteItem] {
+        let words = query.lowercased().split(whereSeparator: \.isWhitespace)
+        return paletteItems.filter { $0.matches(words) }
+    }
+
+    public func isAvailable(_ command: PaletteCommand) -> Bool {
+        let onPage = listScreen == nil && zoomedBlockId == nil
+        let editablePage = onPage && !isJournalStream && (currentPage.map { $0.journalDay == nil } ?? false)
+        switch command {
+        case .toggleFavorite: return onPage && currentPage != nil
+        case .renamePage, .deletePage: return editablePage
+        case .previousDay, .nextDay: return isShowingJournal
+        case .goBack: return canGoBack || zoomedBlockId != nil
+        case .goForward: return canGoForward
+        case .openJournals, .allPages, .toggleSidebar, .toggleTheme: return true
+        }
+    }
+
+    public func perform(_ command: PaletteCommand) {
+        guard isAvailable(command) else { return }
+        switch command {
+        case .toggleFavorite:
+            if let page = currentPage { toggleFavorite(page.id) }
+        case .renamePage:
+            renameRequest &+= 1
+        case .deletePage:
+            pendingPageDelete = currentPage
+        case .openJournals: openTodayJournal()
+        case .previousDay: stepJournalDay(-1)
+        case .nextDay: stepJournalDay(1)
+        case .allPages: showAllPages()
+        case .goBack: goBack()
+        case .goForward: goForward()
+        case .toggleSidebar, .toggleTheme: break
+        }
+    }
+
+    public func requestDelete(_ pageId: String) {
+        pendingPageDelete = pages.first { $0.id == pageId && $0.journalDay == nil }
+    }
+
+    public func confirmPendingDelete() {
+        guard let page = pendingPageDelete else { return }
+        pendingPageDelete = nil
+        deletePage(page.id)
+    }
+
+    private func title(for command: PaletteCommand) -> String {
+        switch command {
+        case .toggleFavorite: return currentPage?.favorite == true ? "Remove from Favorites" : "Add to Favorites"
+        case .renamePage: return "Rename Page"
+        case .deletePage: return "Delete Page…"
+        case .openJournals: return "Go to Journals"
+        case .previousDay: return "Previous Day"
+        case .nextDay: return "Next Day"
+        case .allPages: return "Go to All Pages"
+        case .goBack: return "Back"
+        case .goForward: return "Forward"
+        case .toggleSidebar: return "Toggle Sidebar"
+        case .toggleTheme: return "Toggle Light/Dark"
         }
     }
 

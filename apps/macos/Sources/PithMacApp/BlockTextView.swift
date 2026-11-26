@@ -124,11 +124,74 @@ final class PithTextView: NSTextView {
         return NSRect(x: rect.minX, y: rect.midY - height / 2, width: 2, height: height)
     }
 
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = hoverTrackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        applyHoverCursor(for: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        applyHoverCursor(for: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+    }
+
+    private func applyHoverCursor(for event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point) else { return }
+        if !isEditable, pageId(at: point) != nil || externalURL(at: point) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
+    }
+
     override func resetCursorRects() {
         if isEditable {
             super.resetCursorRects()
-        } else {
-            addCursorRect(bounds, cursor: .iBeam)
+            return
+        }
+        addCursorRect(bounds, cursor: .iBeam)
+        guard let layout = layoutManager, let container = textContainer, let storage = textStorage,
+              storage.length > 0 else { return }
+        let full = NSRange(location: 0, length: storage.length)
+        for key in [NSAttributedString.Key.pithPageId, NSAttributedString.Key.pithExternalURL] {
+            storage.enumerateAttribute(key, in: full) { value, range, _ in
+                guard value != nil else { return }
+                let glyphRange = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                layout.enumerateEnclosingRects(
+                    forGlyphRange: glyphRange,
+                    withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                    in: container
+                ) { rect, _ in
+                    var shifted = rect
+                    shifted.origin.x += self.textContainerOrigin.x
+                    shifted.origin.y += self.textContainerOrigin.y
+                    self.addCursorRect(shifted, cursor: .pointingHand)
+                }
+            }
         }
     }
 
@@ -312,6 +375,7 @@ struct BlockTextView: NSViewRepresentable {
             }
             if textView.textStorage?.isEqual(to: display) != true {
                 textView.textStorage?.setAttributedString(display)
+                textView.window?.invalidateCursorRects(for: textView)
             }
         }
     }
