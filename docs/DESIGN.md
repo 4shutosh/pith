@@ -26,7 +26,7 @@ A new value goes into one of these first, then gets used. Never write a raw numb
 
 ## Alignment
 
-- **One left edge per column.** In the pane: page title, subtitle, top-level bullets, dividers, day headings, reference cards and list-row content all start on the column edge. In the sidebar: every label starts at x 44 (row inset 10, icon 15, gap 9), and section labels start on the icon column.
+- **One left edge per column.** In the pane: page title, subtitle, top-level bullets, dividers, day headings, reference cards and list-row content all start on the column edge. In the sidebar: every row's first element starts at x 20 (outer inset 10, row inset 10). For Journals and All pages that is the icon, with the label at x 44; for section headers and page names it is the text. Section-header icons sit at the right end of their row. Never leave an empty icon gutter in front of text.
 - **Backgrounds bleed; content doesn't move.** Hover, selection and list-row fills extend past the edge (6 pt for blocks, 12 pt for list rows) so the text inside stays on the shared edge.
 - **Right edges match too.** Header actions, counts and the end of dividers line up with the column's right edge.
 - **Vertical centres.** Icons, bullets and controls are centred on the line they belong to. Check them against text, not against frames.
@@ -63,9 +63,16 @@ No other sizes. Weight carries emphasis (regular, medium, semibold); size carrie
 ## Components
 
 - **Radii:** 6 for rows and small controls, 7 for fields and list rows, 8 for cards.
-- **Icons:** drawn with SwiftUI shapes in `Icons.swift`, 14–15 pt frames, strokes of 1.1–1.25 pt, coloured by the foreground. No SF Symbols, so icons match Inter and both themes.
+- **Icons mark landmarks and state, never repeating content.** Fixed navigation items and section headers get an icon (Journals, All pages, Favorites, Recent), as do state (task marks, the favorite star in All pages), function (the collapse arrow, the window-control toggles) and a field's identity (the search magnifier). Repeating rows such as page lists have none. Icons are drawn with SwiftUI shapes in `Icons.swift`, 14–15 pt frames, strokes of 1.1–1.25 pt, coloured by the foreground; no SF Symbols.
 - **Hit targets:** at least 24 pt; rows and toolbar buttons 28 pt.
 - **Markers in text:** formatting markers (`**`, `*`, `~~`, `==`, backticks) are hidden outside editing and shown dimmed while editing. Page-link brackets currently stay visible.
+
+## Keyboard first
+
+- **Every action has a keyboard path.** It has a shortcut, or at least an entry in the ⌘K palette and the menu bar. On-screen controls are a second path, never the only one.
+- **New actions are `PaletteCommand`s.** Add the case with its title, shortcut and keywords, its availability in `isAvailable`, and its effect in `perform`; then add it to the matching menu. The palette lists it automatically.
+- **No permanent toolbars on content.** Page headers show the title and subtitle only. Page actions live in the palette, the Page menu and right-click menus.
+- **Destructive commands have no single-key shortcut** and always confirm.
 
 ## Interaction
 
@@ -73,6 +80,7 @@ No other sizes. Weight carries emphasis (regular, medium, semibold); size carrie
 - **Favorites are pinned.** They never scroll with Recent.
 - **Shortcut hints appear on hover**, not permanently.
 - **Destructive actions confirm** wherever they appear and stay undoable with ⌘Z. The same action behaves the same everywhere.
+- **Pointers match affordance.** Clickable controls, rows, links, bullets, chevrons, and menus use `.cursor(.pointingHand)` (`CursorModifier.swift`, pure SwiftUI `onContinuousHover`; never an embedded AppKit view, which breaks SwiftUI hover on the row, and never `NSCursor.push`/`pop`); text inputs and block prose use `.iBeam`; non-interactive chrome and empty canvas keep `.arrow`.
 - **Editing behaviour lives in `pith-core`**; views only display it (see AGENTS.md).
 
 ## Checking a change
