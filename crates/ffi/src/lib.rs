@@ -8,7 +8,7 @@ use pith_core::parser::{
 use pith_core::snippet::Segment;
 use pith_core::{
     ApplyResult, Backlink, ChangeEntry, ChangeFeed, EditOutcome, Error, FlatBlockRow, Id, Op,
-    Origin, Page, PageWindow, RenderedSpan, SearchHit, Store, TxMeta, order,
+    Origin, Page, PageSummary, PageWindow, RenderedSpan, SearchHit, Store, TxMeta, order,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -115,6 +115,23 @@ impl From<Page> for FfiPage {
             favorite: page.favorite,
             version: page.version,
             updated_at: page.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiPageSummary {
+    pub page: FfiPage,
+    pub block_count: u64,
+    pub backlink_count: u64,
+}
+
+impl From<PageSummary> for FfiPageSummary {
+    fn from(summary: PageSummary) -> Self {
+        Self {
+            page: summary.page.into(),
+            block_count: summary.block_count,
+            backlink_count: summary.backlink_count,
         }
     }
 }
@@ -758,6 +775,15 @@ impl PithGraph {
         let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
         Ok(store
             .list_journals(limit as usize)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub fn list_page_summaries(&self) -> Result<Vec<FfiPageSummary>, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .list_page_summaries()?
             .into_iter()
             .map(Into::into)
             .collect())

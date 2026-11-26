@@ -23,5 +23,6 @@ pub use ops::Op;
 pub use store::{LiveBlockState, LivePageState, LiveSnapshot, Store};
 pub use types::{
     ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, Crumb, EditOutcome, FlatBlockRow,
-    OpRecord, Origin, Page, PageWindow, PropRecord, RenderedSpan, SearchHit, TxMeta, TxnRecord,
+    OpRecord, Origin, Page, PageSummary, PageWindow, PropRecord, RenderedSpan, SearchHit, TxMeta,
+    TxnRecord,
 };

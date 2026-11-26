@@ -85,6 +85,13 @@ pub struct Page {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageSummary {
+    pub page: Page,
+    pub block_count: u64,
+    pub backlink_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub id: Id,
     pub page_id: Id,

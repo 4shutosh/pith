@@ -566,6 +566,37 @@ fn inline_formatting_spans_toggle_slash_and_favorites() -> Result<()> {
 }
 
 #[test]
+fn list_page_summaries_counts_live_blocks_and_backlinks() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (b1, k1) = f.block(None, None, "Links to [[Hub]] and [[Hub]]")?;
+    let (b2, _) = f.block(None, Some(&k1), "Also mentions [[Hub]]")?;
+    f.store.apply_ops(
+        &[Op::DeleteBlock {
+            id: b2,
+            expected_version: Some(1),
+        }],
+        &user_meta("delete second"),
+    )?;
+    assert!(f.store.get_block(b1)?.is_some());
+
+    let summaries = f.store.list_page_summaries()?;
+    let outline = summaries
+        .iter()
+        .find(|s| s.page.title == "Outline")
+        .context("outline summary")?;
+    let hub = summaries
+        .iter()
+        .find(|s| s.page.title == "Hub")
+        .context("hub summary")?;
+
+    assert_eq!(outline.block_count, 1);
+    assert_eq!(outline.backlink_count, 0);
+    assert_eq!(hub.block_count, 0);
+    assert_eq!(hub.backlink_count, 1);
+    Ok(())
+}
+
+#[test]
 fn bulk_commands_refuse_a_selection_spanning_pages() -> Result<()> {
     let mut f = Fixture::new()?;
     let (a, _) = f.block(None, None, "A")?;

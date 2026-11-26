@@ -260,6 +260,45 @@ impl Store {
         Ok(out)
     }
 
+    pub fn list_page_summaries(&self) -> Result<Vec<crate::types::PageSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.title, p.title_lower, p.journal_day, p.document_mode,
+                    p.created_at, p.updated_at, p.created_by, p.updated_by, p.deleted_at,
+                    p.version, p.favorite,
+                    COALESCE(b.cnt, 0),
+                    COALESCE(r.cnt, 0)
+             FROM pages p
+             LEFT JOIN (
+                 SELECT page_id, COUNT(*) AS cnt
+                 FROM blocks
+                 WHERE deleted_at IS NULL
+                 GROUP BY page_id
+             ) b ON b.page_id = p.id
+             LEFT JOIN (
+                 SELECT target, COUNT(DISTINCT src_block) AS cnt
+                 FROM refs
+                 GROUP BY target
+             ) r ON r.target = p.id
+             WHERE p.deleted_at IS NULL
+             ORDER BY p.updated_at DESC, p.title_lower, p.id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let page = row_to_page(row)?;
+            let block_count: i64 = row.get(12)?;
+            let backlink_count: i64 = row.get(13)?;
+            Ok(crate::types::PageSummary {
+                page,
+                block_count: block_count.max(0) as u64,
+                backlink_count: backlink_count.max(0) as u64,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn get_block(&self, id: Id) -> Result<Option<Block>> {
         self.conn
             .query_row(
