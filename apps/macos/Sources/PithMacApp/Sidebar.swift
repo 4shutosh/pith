@@ -21,11 +21,6 @@ struct Sidebar: View {
                 } action: {
                     controller.openTodayJournal()
                 }
-                SidebarNavItem(title: "Favorites", shortcut: "⇧⌘F", isSelected: destination == .favorites) {
-                    StarIcon(filled: false)
-                } action: {
-                    controller.showFavorites()
-                }
                 SidebarNavItem(title: "All pages", shortcut: "⇧⌘P", isSelected: destination == .allPages) {
                     PagesIcon()
                 } action: {
@@ -33,19 +28,19 @@ struct Sidebar: View {
                 }
             }
 
-            if !controller.sidebarFavorites.isEmpty {
-                SectionLabel(title: "Favorites")
-                VStack(spacing: 1) {
-                    ForEach(controller.sidebarFavorites, id: \.id) { page in
-                        pageItem(page)
-                    }
-                    let hidden = controller.favoritePages.count - controller.sidebarFavorites.count
-                    if hidden > 0 {
-                        MoreLink(label: "View all \(controller.favoritePages.count)") {
-                            controller.showFavorites()
-                        }
-                    }
+            SectionLabel(title: "Favorites")
+            if controller.favoritePages.isEmpty {
+                Text("Star a page to pin it here")
+                    .font(Typography.ui(12))
+                    .foregroundColor(Theme.textTertiary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 24)
+            } else {
+                ViewThatFits(in: .vertical) {
+                    favoritesList
+                    ScrollView(showsIndicators: false) { favoritesList }
                 }
+                .layoutPriority(1)
             }
 
             if !controller.recentPages.isEmpty {
@@ -64,6 +59,14 @@ struct Sidebar: View {
         .padding(.top, 44)
         .padding(.horizontal, 10)
         .padding(.bottom, 48)
+    }
+
+    private var favoritesList: some View {
+        VStack(spacing: 1) {
+            ForEach(controller.favoritePages, id: \.id) { page in
+                pageItem(page)
+            }
+        }
     }
 
     private func pageItem(_ page: FfiPage) -> some View {
@@ -204,25 +207,6 @@ private struct RowBackground: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 6)
             .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
-    }
-}
-
-private struct MoreLink: View {
-    let label: String
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(Typography.ui(12))
-                .foregroundColor(isHovered ? Theme.textSecondary : Theme.textTertiary)
-                .padding(.leading, 34)
-                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
     }
 }
 

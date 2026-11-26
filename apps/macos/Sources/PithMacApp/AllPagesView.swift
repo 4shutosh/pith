@@ -4,7 +4,6 @@ import SwiftUI
 
 struct PageListView: View {
     @ObservedObject var controller: OutlinerController
-    let screen: ListScreen
     let contentLeading: CGFloat
     let contentWidth: CGFloat
     private let relative: RelativeDateTimeFormatter = {
@@ -14,24 +13,14 @@ struct PageListView: View {
     }()
 
     private var pages: [FfiPage] {
-        switch screen {
-        case .allPages: return OutlinerController.recent(controller.pages, limit: controller.pages.count)
-        case .favorites: return controller.favoritePages
-        }
-    }
-
-    private var title: String {
-        switch screen {
-        case .allPages: return "All pages"
-        case .favorites: return "Favorites"
-        }
+        OutlinerController.recent(controller.pages, limit: controller.pages.count)
     }
 
     var body: some View {
         ScrollView {
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(title)
+                    Text("All pages")
                         .font(Typography.ui(28, .semibold))
                         .tracking(-0.4)
                         .foregroundColor(Theme.textStrong)
@@ -40,16 +29,6 @@ struct PageListView: View {
                         .foregroundColor(Theme.textTertiary)
                         .padding(.top, 6)
                         .padding(.bottom, 24)
-
-                    if pages.isEmpty && screen == .favorites {
-                        HStack(spacing: 8) {
-                            StarIcon(filled: false).foregroundColor(Theme.textTertiary)
-                            Text("Star a page to pin it here and in the sidebar.")
-                                .font(Typography.ui(14))
-                                .foregroundColor(Theme.textTertiary)
-                        }
-                        .padding(.horizontal, 12)
-                    }
 
                     LazyVStack(spacing: 2) {
                         ForEach(pages, id: \.id) { page in

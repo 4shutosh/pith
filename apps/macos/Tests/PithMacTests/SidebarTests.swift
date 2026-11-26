@@ -36,15 +36,9 @@ final class SidebarTests: XCTestCase {
         controller.openJournal(date: "2020-01-02")
         XCTAssertEqual(controller.sidebarDestination, .journals)
 
-        controller.showFavorites()
-        XCTAssertEqual(controller.sidebarDestination, .favorites)
-        XCTAssertEqual(controller.listScreen, .favorites)
-
         controller.showAllPages()
         XCTAssertEqual(controller.sidebarDestination, .allPages)
 
-        controller.goBack()
-        XCTAssertEqual(controller.sidebarDestination, .favorites)
         controller.goBack()
         XCTAssertEqual(controller.sidebarDestination, .journals)
         XCTAssertNil(controller.listScreen)
@@ -58,29 +52,28 @@ final class SidebarTests: XCTestCase {
         let controller = try OutlinerController(graph: graph)
 
         XCTAssertEqual(controller.recentPages.map(\.title), ["Plain"])
-        XCTAssertEqual(controller.sidebarFavorites.map(\.title), ["Starred"])
+        XCTAssertEqual(controller.favoritePages.map(\.title), ["Starred"])
     }
 
-    func testTheSidebarPinsSevenFavoritesAndTheFavoritesPageListsAll() throws {
+    func testEveryFavoriteIsPinnedInTheSidebarAlphabetically() throws {
         let graph = try PithGraph.openInMemory()
         for letter in ["H", "G", "F", "E", "D", "C", "B", "A", "I"] {
             _ = try page(graph, letter, favorite: true)
         }
         let controller = try OutlinerController(graph: graph)
 
-        XCTAssertEqual(controller.sidebarFavorites.map(\.title), ["A", "B", "C", "D", "E", "F", "G"])
-        XCTAssertEqual(controller.favoritePages.count, 9)
+        XCTAssertEqual(controller.favoritePages.map(\.title), ["A", "B", "C", "D", "E", "F", "G", "H", "I"])
+        controller.selectPage(try XCTUnwrap(controller.favoritePages.last).id)
+        XCTAssertEqual(controller.sidebarDestination, .page(try XCTUnwrap(controller.favoritePages.last).id))
     }
 
-    func testUnstarringRemovesAPageFromFavorites() throws {
+    func testUnstarringMovesAPageFromFavoritesToRecent() throws {
         let graph = try PithGraph.openInMemory()
         let starred = try page(graph, "Starred", favorite: true)
         let controller = try OutlinerController(graph: graph)
-        controller.showFavorites()
 
         controller.toggleFavorite(starred)
         XCTAssertEqual(controller.favoritePages.map(\.title), [])
         XCTAssertEqual(controller.recentPages.map(\.title), ["Starred"])
-        XCTAssertEqual(controller.listScreen, .favorites)
     }
 }

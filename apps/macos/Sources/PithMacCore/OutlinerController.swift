@@ -6,18 +6,15 @@ public enum NavTarget: Equatable {
     case page(id: String, zoomedBlockId: String?)
     case pendingJournal(title: String)
     case allPages
-    case favorites
     case journals
 }
 
 public enum ListScreen: Equatable {
     case allPages
-    case favorites
 }
 
 public enum SidebarDestination: Equatable {
     case journals
-    case favorites
     case allPages
     case page(String)
 }
@@ -118,14 +115,8 @@ public final class OutlinerController: ObservableObject {
         !isJournalStream && UInt64(rows.count) < totalVisible
     }
 
-    public static let sidebarFavoritesLimit = 7
-
     public var isShowingAllPages: Bool {
         listScreen == .allPages
-    }
-
-    public var sidebarFavorites: [FfiPage] {
-        Array(favoritePages.prefix(Self.sidebarFavoritesLimit))
     }
 
     public var recentPages: [FfiPage] {
@@ -135,27 +126,18 @@ public final class OutlinerController: ObservableObject {
     public var sidebarDestination: SidebarDestination? {
         switch listScreen {
         case .allPages: return .allPages
-        case .favorites: return .favorites
         case nil: break
         }
         if isJournalStream && zoomedBlockId == nil {
             return .journals
         }
         if let id = selectedPageId,
-           sidebarFavorites.contains(where: { $0.id == id }) || recentPages.contains(where: { $0.id == id }) {
+           favoritePages.contains(where: { $0.id == id }) || recentPages.contains(where: { $0.id == id }) {
             return .page(id)
         }
         return isShowingJournal ? .journals : nil
     }
 
-    public func showFavorites() {
-        pushHistoryIfNeeded(for: .favorites)
-        clearSelection()
-        leaveBlock()
-        isJournalStream = false
-        listScreen = .favorites
-        run { pages = try graph.listPages() }
-    }
 
     public static func recent(_ pages: [FfiPage], limit: Int) -> [FfiPage] {
         Array(
@@ -409,7 +391,6 @@ public final class OutlinerController: ObservableObject {
 
     private func currentNavTarget() -> NavTarget? {
         if listScreen == .allPages { return .allPages }
-        if listScreen == .favorites { return .favorites }
         if isJournalStream && zoomedBlockId == nil { return .journals }
         if let id = selectedPageId { return .page(id: id, zoomedBlockId: zoomedBlockId) }
         if let title = pendingJournalTitle { return .pendingJournal(title: title) }
@@ -452,9 +433,6 @@ public final class OutlinerController: ObservableObject {
                 pendingJournalTitle = todayTitle
             }
             reload()
-        case .favorites:
-            listScreen = .favorites
-            run { pages = try graph.listPages() }
         case .allPages:
             listScreen = .allPages
             run {

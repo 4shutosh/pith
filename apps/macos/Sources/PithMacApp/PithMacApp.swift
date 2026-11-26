@@ -19,10 +19,9 @@ struct ContentView: View {
 
             ZStack(alignment: .leading) {
                 Group {
-                    if let screen = controller.listScreen {
+                    if controller.listScreen == .allPages {
                         PageListView(
                             controller: controller,
-                            screen: screen,
                             contentLeading: layout.leading,
                             contentWidth: layout.width
                         )
@@ -144,8 +143,6 @@ struct PithMacApp: App {
                     .keyboardShortcut("k", modifiers: .command)
                 Button("Journals") { controller.openTodayJournal() }
                     .keyboardShortcut("j", modifiers: .command)
-                Button("Favorites") { controller.showFavorites() }
-                    .keyboardShortcut("f", modifiers: [.command, .shift])
                 Button("All pages") { controller.showAllPages() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                 Button("Back") { controller.goBack() }
