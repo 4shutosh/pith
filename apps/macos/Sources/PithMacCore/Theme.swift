@@ -105,6 +105,21 @@ public enum Theme {
     }
 }
 
+public enum TypeScale {
+    public static let pageTitle: CGFloat = 28
+    public static let sectionTitle: CGFloat = 22
+    public static let searchInput: CGFloat = 17
+    public static let block: CGFloat = 15
+    public static let listRow: CGFloat = 14
+    public static let ui: CGFloat = 13
+    public static let meta: CGFloat = 12
+    public static let label: CGFloat = 11
+    public static let code: CGFloat = 13.5
+
+    public static let sans: Set<CGFloat> = [pageTitle, sectionTitle, searchInput, block, listRow, ui, meta, label]
+    public static let mono: Set<CGFloat> = [code]
+}
+
 public enum Typography {
     public static let sansFamily = "Inter"
     public static let monoFamily = "JetBrains Mono"
