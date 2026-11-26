@@ -22,6 +22,7 @@ public enum SidebarDestination: Equatable {
 @MainActor
 public final class OutlinerController: ObservableObject {
     @Published public var pages: [FfiPage] = []
+    @Published public var pageSummaries: [FfiPageSummary] = []
     @Published public var journals: [FfiPage] = []
     @Published public private(set) var isJournalStream: Bool = false
     @Published public private(set) var journalSections: [JournalSection] = []
@@ -151,6 +152,9 @@ public final class OutlinerController: ObservableObject {
         do {
             pages = try graph.listPages()
             journals = try graph.listJournals(limit: UInt32(max(30, journalStreamDays + 2)))
+            if listScreen == .allPages {
+                pageSummaries = try graph.listPageSummaries()
+            }
             if isJournalStream && zoomedBlockId == nil {
                 try loadJournalStream()
                 reconcileFocusAndSelection()
@@ -319,13 +323,24 @@ public final class OutlinerController: ObservableObject {
         run {
             pages = try graph.listPages()
             journals = try graph.listJournals(limit: 30)
+            pageSummaries = try graph.listPageSummaries()
         }
     }
 
     public func renameCurrentPage(to newTitle: String) {
+        guard let page = currentPage else { return }
+        renamePage(page.id, to: newTitle)
+    }
+
+    public func renamePage(_ pageId: String, to newTitle: String) {
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let page = currentPage, page.journalDay == nil, trimmed != page.title else { return }
-        flushDraft()
+        guard !trimmed.isEmpty,
+              let page = pages.first(where: { $0.id == pageId }),
+              page.journalDay == nil,
+              trimmed != page.title else { return }
+        if selectedPageId == pageId {
+            flushDraft()
+        }
         run {
             _ = try graph.applyOps(
                 ops: [.renamePage(id: page.id, title: trimmed, expectedVersion: page.version)],
@@ -450,6 +465,7 @@ public final class OutlinerController: ObservableObject {
             run {
                 pages = try graph.listPages()
                 journals = try graph.listJournals(limit: 30)
+                pageSummaries = try graph.listPageSummaries()
             }
         case let .pendingJournal(title):
             listScreen = nil

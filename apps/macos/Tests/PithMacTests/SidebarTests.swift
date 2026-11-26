@@ -89,4 +89,56 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(controller.selectedPageId, first)
         XCTAssertFalse(controller.pages.contains { $0.id == second })
     }
+
+    func testPageDirectoryFiltersAndSortsSummaries() {
+        func summary(
+            _ title: String,
+            journal: Int32? = nil,
+            favorite: Bool = false,
+            updated: Int64,
+            blocks: UInt64,
+            backlinks: UInt64
+        ) -> FfiPageSummary {
+            FfiPageSummary(
+                page: FfiPage(
+                    id: title,
+                    title: title,
+                    journalDay: journal,
+                    documentMode: false,
+                    favorite: favorite,
+                    version: 1,
+                    updatedAt: updated
+                ),
+                blockCount: blocks,
+                backlinkCount: backlinks
+            )
+        }
+
+        let items = [
+            summary("Beta", updated: 10, blocks: 5, backlinks: 1),
+            summary("Alpha", favorite: true, updated: 30, blocks: 2, backlinks: 9),
+            summary("Stub", updated: 20, blocks: 0, backlinks: 3),
+            summary("2026-11-26", journal: 20261126, updated: 40, blocks: 4, backlinks: 0),
+        ]
+
+        XCTAssertEqual(PageDirectory.count(in: items, for: .pages), 3)
+        XCTAssertEqual(PageDirectory.count(in: items, for: .favorites), 1)
+        XCTAssertEqual(PageDirectory.count(in: items, for: .journals), 1)
+        XCTAssertEqual(PageDirectory.count(in: items, for: .empty), 1)
+
+        XCTAssertEqual(
+            PageDirectory.filter(items, tab: .pages, query: "", sort: .backlinks).map(\.page.title),
+            ["Alpha", "Stub", "Beta"]
+        )
+        XCTAssertEqual(
+            PageDirectory.filter(items, tab: .pages, query: "", sort: .blocks).map(\.page.title),
+            ["Beta", "Alpha", "Stub"]
+        )
+        XCTAssertEqual(
+            PageDirectory.filter(items, tab: .pages, query: "al", sort: .title).map(\.page.title),
+            ["Alpha"]
+        )
+        XCTAssertTrue(PageDirectory.offersCreate(query: "Gamma", in: items))
+        XCTAssertFalse(PageDirectory.offersCreate(query: "alpha", in: items))
+    }
 }

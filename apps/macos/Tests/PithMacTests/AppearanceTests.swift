@@ -151,6 +151,10 @@ final class AppearanceTests: XCTestCase {
         XCTAssertEqual(EditorLayout.compute(windowWidth: 1280, sidebarOpen: false), EditorLayout(leading: 300, width: 680))
         XCTAssertEqual(EditorLayout.compute(windowWidth: 820, sidebarOpen: true), EditorLayout(leading: 281, width: 475))
         XCTAssertEqual(EditorLayout.compute(windowWidth: 600, sidebarOpen: true), EditorLayout(leading: 281, width: 320))
+        XCTAssertEqual(
+            EditorLayout.compute(windowWidth: 1280, sidebarOpen: true, maximumWidth: EditorLayout.directoryWidth),
+            EditorLayout(leading: 338.5, width: 820)
+        )
     }
 
     func testColumnHelpers() {

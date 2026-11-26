@@ -22,11 +22,16 @@ struct ContentView: View {
             ZStack(alignment: .topLeading) {
                 Group {
                     if controller.listScreen == .allPages {
+                        let directory = EditorLayout.compute(
+                            windowWidth: proxy.size.width,
+                            sidebarOpen: showSidebar,
+                            maximumWidth: EditorLayout.directoryWidth
+                        )
                         PageListView(
                             controller: controller,
                             showSearch: $showSearch,
-                            contentLeading: layout.leading,
-                            contentWidth: layout.width
+                            contentLeading: directory.leading,
+                            contentWidth: directory.width
                         )
                     } else {
                         OutlinerView(

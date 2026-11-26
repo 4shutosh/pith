@@ -123,6 +123,11 @@ final class PerformanceTests: XCTestCase {
             controller.runSearch(words[run % words.count])
         })
         controller.blurFocus()
+        stats.append(measure("open All pages (counts)", budget: 50, runs: 10) { _ in
+            controller.showAllPages()
+        })
+        XCTAssertEqual(controller.pageSummaries.count, 200 + 1 + 60)
+        controller.selectPage(longId)
         stats.append(measure("toggle collapse", budget: 16, runs: 20) { _ in
             controller.toggleCollapse(ids[1])
         })
