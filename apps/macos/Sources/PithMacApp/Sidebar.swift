@@ -8,61 +8,45 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Theme.accent)
-                    .frame(width: 20, height: 20)
-                    .overlay(Text("p").font(Typography.ui(12, .semibold)).foregroundColor(.white))
-                Text("pith")
-                    .font(Typography.ui(14, .semibold))
-                    .foregroundColor(Theme.textPrimary)
-                Spacer()
-                IconButton(symbol: "magnifyingglass", label: "Search") { showSearch = true }
-                IconButton(symbol: "square.and.pencil", label: "New page", filled: true) { showSearch = true }
-            }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 14)
-
-            VStack(spacing: 1) {
-                SidebarItem(symbol: "calendar", title: "Today", isSelected: controller.isShowingToday) {
+            VStack(spacing: 2) {
+                SidebarNavItem(title: "Today", shortcut: "⌘J", isSelected: controller.isShowingToday) {
+                    TodayIcon()
+                } action: {
                     controller.openTodayJournal()
                 }
-                SidebarItem(symbol: "doc.on.doc", title: "All pages", isSelected: controller.isShowingAllPages) {
+                SidebarNavItem(title: "All pages", isSelected: controller.isShowingAllPages) {
+                    PagesIcon()
+                } action: {
                     controller.showAllPages()
                 }
-                SidebarItem(symbol: "magnifyingglass", title: "Search", shortcut: "⌘K", isSelected: false) {
+                SidebarNavItem(title: "Search", shortcut: "⌘K", isSelected: false) {
+                    SearchIcon()
+                } action: {
                     showSearch = true
                 }
             }
 
             if !controller.recentPages.isEmpty {
                 SectionLabel(title: "Recent")
-                VStack(spacing: 1) {
-                    ForEach(controller.recentPages, id: \.id) { page in
-                        SidebarItem(
-                            symbol: page.journalDay == nil ? "doc.text" : "calendar",
-                            title: page.title,
-                            isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
-                        ) {
-                            controller.selectPage(page.id)
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 2) {
+                        ForEach(controller.recentPages, id: \.id) { page in
+                            SidebarPageItem(
+                                title: page.title,
+                                isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
+                            ) {
+                                controller.selectPage(page.id)
+                            }
                         }
                     }
                 }
             }
 
             Spacer(minLength: 12)
-
-            HStack(spacing: 8) {
-                Circle().fill(Theme.healthy).frame(width: 7, height: 7)
-                Text("Local graph · \(controller.pages.count) pages")
-                    .font(Typography.ui(12))
-                    .foregroundColor(Theme.textTertiary)
-            }
-            .padding(8)
         }
-        .padding(.top, 40)
+        .padding(.top, 44)
         .padding(.horizontal, 10)
-        .padding(.bottom, 10)
+        .padding(.bottom, 44)
     }
 }
 
@@ -71,32 +55,32 @@ private struct SectionLabel: View {
 
     var body: some View {
         Text(title)
-            .font(Typography.ui(12, .medium))
+            .font(Typography.ui(11, .medium))
+            .tracking(0.4)
             .foregroundColor(Theme.textTertiary)
             .padding(.horizontal, 8)
-            .padding(.top, 22)
+            .padding(.top, 24)
             .padding(.bottom, 6)
     }
 }
 
-struct SidebarItem: View {
-    let symbol: String
+private struct SidebarNavItem<Icon: View>: View {
     let title: String
     var shortcut: String? = nil
     let isSelected: Bool
+    @ViewBuilder let icon: () -> Icon
     let action: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: symbol)
-                    .font(.system(size: 13, weight: .regular))
-                    .frame(width: 16)
-                    .foregroundColor(isSelected ? Theme.textPrimary : Theme.textSecondary)
+            HStack(spacing: 9) {
+                icon()
+                    .foregroundColor(isSelected ? Theme.accent : (isHovered ? Theme.textSecondary : Theme.textTertiary))
+                    .frame(width: 15)
                 Text(title)
                     .font(Typography.ui(13, isSelected ? .medium : .regular))
-                    .foregroundColor(isSelected ? Theme.textStrong : Theme.textBody)
+                    .foregroundColor(isSelected ? Theme.textStrong : (isHovered ? Theme.textPrimary : Theme.textSecondary))
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if let shortcut {
@@ -106,7 +90,7 @@ struct SidebarItem: View {
                 }
             }
             .padding(.horizontal, 8)
-            .frame(height: 30)
+            .frame(height: 29)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
@@ -118,27 +102,83 @@ struct SidebarItem: View {
     }
 }
 
-struct IconButton: View {
-    let symbol: String
-    let label: String
-    var filled: Bool = false
+private struct SidebarPageItem: View {
+    let title: String
+    let isSelected: Bool
     let action: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(Theme.textSecondary)
+            HStack(spacing: 0) {
+                Text(title)
+                    .font(Typography.ui(13, isSelected ? .medium : .regular))
+                    .foregroundColor(isSelected ? Theme.textStrong : (isHovered ? Theme.textPrimary : Theme.textSecondary))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}
+
+struct SidebarToggleButton: View {
+    let label: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            SidebarToggleIcon()
+                .foregroundColor(isHovered ? Theme.textPrimary : Theme.textTertiary)
                 .frame(width: 28, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(filled || isHovered ? Theme.selected : Color.clear)
+                        .fill(isHovered ? Theme.hover : Color.clear)
                 )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+        .onHover { isHovered = $0 }
+    }
+}
+
+struct ThemeToggleButton: View {
+    @Binding var mode: ThemeMode
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            mode = ThemeMode.toggled(currentlyDark: colorScheme == .dark)
+        } label: {
+            Group {
+                if colorScheme == .dark {
+                    SunIcon()
+                } else {
+                    MoonIcon()
+                }
+            }
+            .foregroundColor(isHovered ? Theme.textPrimary : Theme.textTertiary)
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? Theme.hover : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(colorScheme == .dark ? "Switch to light (⇧⌘L)" : "Switch to dark (⇧⌘L)")
+        .accessibilityLabel(colorScheme == .dark ? "Switch to light appearance" : "Switch to dark appearance")
         .onHover { isHovered = $0 }
     }
 }

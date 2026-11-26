@@ -65,13 +65,45 @@ final class AppearanceTests: XCTestCase {
     func testEditingHighlightsComeFromTheCoreTokenizer() {
         let storage = NSTextStorage(string: "Read [[Pith]] #core")
         BlockStyle.applyHighlights(to: storage, highlights: highlight(text: storage.string))
-        let bracket = storage.attribute(.foregroundColor, at: 5, effectiveRange: nil) as? NSColor
-        let title = storage.attribute(.foregroundColor, at: 7, effectiveRange: nil) as? NSColor
-        let plain = storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
-        XCTAssertEqual(bracket, NSColor(hex: 0x5D5F66))
-        XCTAssertEqual(title, Theme.nsLink)
-        XCTAssertEqual(plain, NSColor(hex: 0xE8E8EA))
-        XCTAssertEqual(storage.attribute(.foregroundColor, at: 14, effectiveRange: nil) as? NSColor, Theme.nsLink)
+        let color = { (index: Int) in storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor }
+        XCTAssertEqual(hex(color(5), in: .darkAqua), 0x5A554E)
+        XCTAssertEqual(hex(color(7), in: .darkAqua), 0xE0A463)
+        XCTAssertEqual(hex(color(0), in: .darkAqua), 0xDDD9D0)
+        XCTAssertEqual(hex(color(14), in: .darkAqua), 0x84B59F)
+        XCTAssertEqual(hex(color(5), in: .aqua), 0xB3ADA3)
+        XCTAssertEqual(hex(color(7), in: .aqua), 0xA35F17)
+        XCTAssertEqual(hex(color(0), in: .aqua), 0x2A2723)
+        XCTAssertEqual(hex(color(14), in: .aqua), 0x3C7A5E)
+    }
+
+    func testThePaletteResolvesPerAppearance() {
+        XCTAssertEqual(hex(Theme.nsCanvas, in: .darkAqua), 0x181715)
+        XCTAssertEqual(hex(Theme.nsCanvas, in: .aqua), 0xFBFAF7)
+        XCTAssertEqual(hex(Theme.nsTextStrong, in: .darkAqua), 0xF2EFE9)
+        XCTAssertEqual(hex(Theme.nsTextStrong, in: .aqua), 0x1B1916)
+        XCTAssertEqual(hex(Theme.nsCaret, in: .aqua), 0xA8641C)
+    }
+
+    func testThemeModesMapToAppearancesAndToggleFromTheCurrentLook() {
+        XCTAssertNil(ThemeMode.system.appearance)
+        XCTAssertEqual(ThemeMode.light.appearance?.name, .aqua)
+        XCTAssertEqual(ThemeMode.dark.appearance?.name, .darkAqua)
+        XCTAssertEqual(ThemeMode.toggled(currentlyDark: true), .light)
+        XCTAssertEqual(ThemeMode.toggled(currentlyDark: false), .dark)
+        XCTAssertEqual(ThemeMode(rawValue: "dark"), .dark)
+        XCTAssertTrue(ThemeMode.isDark(NSAppearance(named: .darkAqua)!))
+        XCTAssertFalse(ThemeMode.isDark(NSAppearance(named: .aqua)!))
+    }
+
+    private func hex(_ color: NSColor?, in name: NSAppearance.Name) -> UInt32? {
+        guard let color, let appearance = NSAppearance(named: name) else { return nil }
+        var value: UInt32?
+        appearance.performAsCurrentDrawingAppearance {
+            guard let rgb = color.usingColorSpace(.sRGB) else { return }
+            let channel = { (c: CGFloat) in UInt32((c * 255).rounded()) }
+            value = channel(rgb.redComponent) << 16 | channel(rgb.greenComponent) << 8 | channel(rgb.blueComponent)
+        }
+        return value
     }
 
     func testColumnHelpers() {

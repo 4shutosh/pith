@@ -3,63 +3,25 @@ import PithCore
 import PithMacCore
 import SwiftUI
 
-struct PanelHeader: View {
-    let crumbs: [String]
-    var trailing: String? = nil
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(Array(crumbs.enumerated()), id: \.offset) { index, crumb in
-                if index > 0 {
-                    Text("/").foregroundColor(Theme.bullet)
-                }
-                Text(crumb)
-                    .foregroundColor(index == crumbs.count - 1 ? Theme.textPrimary : Theme.textSecondary)
-                    .fontWeight(index == crumbs.count - 1 ? .medium : .regular)
-                    .lineLimit(1)
-            }
-            Spacer()
-            if let trailing {
-                Text(trailing).foregroundColor(Theme.textTertiary)
-            }
-        }
-        .font(Typography.ui(13))
-        .padding(.horizontal, 20)
-        .frame(height: 50)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Theme.divider).frame(height: 1)
-        }
-    }
-}
-
 struct OutlinerView: View {
     @ObservedObject var controller: OutlinerController
-
-    private var section: String {
-        let isJournal = controller.selectedPageId == nil
-            || controller.pages.first(where: { $0.id == controller.selectedPageId })?.journalDay != nil
-        return isJournal ? "Journals" : "Pages"
-    }
+    let contentLeading: CGFloat
+    let contentWidth: CGFloat
+    let headerLeading: CGFloat
 
     var body: some View {
         VStack(spacing: 0) {
             if controller.zoomedBlockId != nil {
-                ZoomHeader(controller: controller)
-            } else {
-                PanelHeader(
-                    crumbs: [section, controller.pageTitle ?? ""],
-                    trailing: controller.backlinks.isEmpty ? nil : "\(controller.backlinks.count) linked"
-                )
+                ZoomHeader(controller: controller, leadingPadding: headerLeading)
             }
             ScrollViewReader { proxy in
                 ScrollView {
                     HStack(spacing: 0) {
-                        Spacer(minLength: 0)
                         content
-                            .frame(maxWidth: 720, alignment: .leading)
-                            .padding(.horizontal, 32)
-                            .padding(.top, 44)
-                            .padding(.bottom, 120)
+                            .frame(width: contentWidth, alignment: .leading)
+                            .padding(.leading, contentLeading)
+                            .padding(.top, controller.zoomedBlockId == nil ? 58 : 28)
+                            .padding(.bottom, 140)
                         Spacer(minLength: 0)
                     }
                 }
@@ -83,13 +45,18 @@ struct OutlinerView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(controller.pageTitle ?? "")
                 .font(Typography.ui(28, .semibold))
-                .tracking(-0.3)
+                .tracking(-0.4)
                 .foregroundColor(Theme.textStrong)
-            Text(subtitle)
-                .font(Typography.ui(13))
-                .foregroundColor(Theme.textTertiary)
-                .padding(.top, 6)
-                .padding(.bottom, 26)
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(Typography.ui(13))
+                    .foregroundColor(Theme.textTertiary)
+                    .padding(.top, 6)
+                    .padding(.bottom, 28)
+            } else {
+                Spacer().frame(height: 26)
+            }
 
             if let error = controller.errorMessage {
                 Text(error)
@@ -133,18 +100,21 @@ struct OutlinerView: View {
 
             if !controller.backlinks.isEmpty {
                 LinkedReferences(controller: controller)
-                    .padding(.top, 44)
+                    .padding(.top, 52)
             }
         }
     }
 
-    private var subtitle: String {
-        let count = controller.totalVisible
-        let blocks = count == 1 ? "1 block" : "\(count) blocks"
+    private var subtitle: String? {
+        var parts: [String] = []
         if controller.isShowingToday {
-            return "Today · \(blocks)"
+            parts.append("Today")
         }
-        return blocks
+        if !controller.backlinks.isEmpty {
+            let count = controller.backlinks.count
+            parts.append(count == 1 ? "1 linked reference" : "\(count) linked references")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
@@ -159,7 +129,7 @@ private struct OutlineRow: View {
 
     private static let indent: CGFloat = 24
     private static let guideX: CGFloat = 22.5
-    private static let rowPadding: CGFloat = 3
+    private static let rowPadding: CGFloat = 4
 
     var body: some View {
         let presentation = BlockPresentation.runs(row.spans)
@@ -238,8 +208,7 @@ private struct OutlineRow: View {
             Button {
                 controller.toggleCollapse(row.id)
             } label: {
-                Image(systemName: row.collapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
+                ChevronIcon(expanded: !row.collapsed)
                     .foregroundColor(Theme.textTertiary)
                     .frame(width: 14, height: BlockStyle.lineHeight)
                     .contentShape(Rectangle())
@@ -274,7 +243,7 @@ private struct OutlineRow: View {
                             .frame(width: 14, height: 14)
                     }
                     Circle()
-                        .fill(Theme.bullet)
+                        .fill(isHovered ? Theme.textSecondary : Theme.bullet)
                         .frame(width: 5, height: 5)
                 }
                 .frame(width: 18, height: BlockStyle.lineHeight)
@@ -290,27 +259,16 @@ struct StatusIcon: View {
     let status: TaskStatus
 
     var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: 14, weight: .regular))
+        TaskMark(status: status)
             .foregroundColor(color)
             .accessibilityLabel(label)
-    }
-
-    private var symbol: String {
-        switch status {
-        case .todo: return "circle"
-        case .doing: return "circle.lefthalf.filled"
-        case .later: return "circle.dashed"
-        case .done: return "checkmark.circle.fill"
-        case .canceled: return "xmark.circle.fill"
-        }
     }
 
     private var color: Color {
         switch status {
         case .todo, .later, .canceled: return Theme.textTertiary
         case .doing: return Theme.inProgress
-        case .done: return Theme.accent
+        case .done: return Theme.done
         }
     }
 
@@ -330,39 +288,51 @@ private struct LinkedReferences: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Rectangle().fill(Theme.panelBorder).frame(height: 1)
+            Rectangle().fill(Theme.divider).frame(height: 1)
             Text("Linked references · \(controller.backlinks.count)")
                 .font(Typography.ui(12, .medium))
-                .foregroundColor(Theme.textSecondary)
-                .padding(.top, 8)
+                .foregroundColor(Theme.textTertiary)
+                .padding(.top, 10)
             ForEach(controller.backlinks, id: \.blockId) { backlink in
-                Button {
+                BacklinkCard(backlink: backlink) {
                     controller.selectPage(backlink.pageId)
                     controller.focusBlock(backlink.blockId)
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(backlink.pageTitle)
-                            .font(Typography.ui(12))
-                            .foregroundColor(Theme.textTertiary)
-                        Text(InlineFormatter.format(backlink.spans))
-                            .font(Typography.ui(14))
-                            .foregroundColor(Theme.textBody)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.hover))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.panelBorder, lineWidth: 1))
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
             }
         }
     }
 }
 
+private struct BacklinkCard: View {
+    let backlink: FfiBacklink
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(backlink.pageTitle)
+                    .font(Typography.ui(12, .medium))
+                    .foregroundColor(Theme.textSecondary)
+                Text(InlineFormatter.format(backlink.spans))
+                    .font(Typography.ui(14))
+                    .foregroundColor(Theme.textBody)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(RoundedRectangle(cornerRadius: 8).fill(isHovered ? Theme.hover : Theme.elevated))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.divider, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}
+
 private struct ZoomHeader: View {
     @ObservedObject var controller: OutlinerController
+    let leadingPadding: CGFloat
 
     var body: some View {
         HStack(spacing: 8) {
@@ -385,8 +355,9 @@ private struct ZoomHeader: View {
             Spacer()
         }
         .font(Typography.ui(13))
-        .padding(.horizontal, 20)
-        .frame(height: 50)
+        .padding(.leading, leadingPadding)
+        .padding(.trailing, 20)
+        .frame(height: 46)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.divider).frame(height: 1)
         }

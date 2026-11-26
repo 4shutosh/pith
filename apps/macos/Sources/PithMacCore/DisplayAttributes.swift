@@ -27,7 +27,7 @@ public enum BlockStyle {
 
     public static let editingAttributes: [NSAttributedString.Key: Any] = [
         .font: font,
-        .foregroundColor: NSColor(hex: 0xE8E8EA),
+        .foregroundColor: Theme.nsTextPrimary,
         .paragraphStyle: paragraph,
         .baselineOffset: baselineOffset,
     ]
@@ -46,8 +46,9 @@ public enum BlockStyle {
 
     static func attributes(for kind: FfiHighlightKind) -> [NSAttributedString.Key: Any] {
         switch kind {
-        case .bracket: return [.foregroundColor: NSColor(hex: 0x5D5F66)]
-        case .link, .tag: return [.foregroundColor: Theme.nsLink]
+        case .bracket: return [.foregroundColor: Theme.nsBracket]
+        case .link: return [.foregroundColor: Theme.nsLink]
+        case .tag: return [.foregroundColor: Theme.nsTag]
         case .code: return codeAttributes
         case .blockRef: return blockRefAttributes
         }
@@ -56,12 +57,13 @@ public enum BlockStyle {
     static let codeAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFontManager.shared.font(withFamily: Typography.monoFamily, traits: [], weight: 5, size: 13.5)
             ?? NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular),
-        .backgroundColor: NSColor(hex: 0x1C1C1F),
+        .foregroundColor: Theme.nsCodeText,
+        .backgroundColor: Theme.nsCodeBg,
     ]
 
     static let blockRefAttributes: [NSAttributedString.Key: Any] = [
         .underlineStyle: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDash.rawValue,
-        .underlineColor: NSColor(hex: 0x5D5F66),
+        .underlineColor: Theme.nsBracket,
     ]
 
     public static func display(_ runs: [DisplayRun], closed: Bool) -> NSAttributedString {
@@ -80,15 +82,15 @@ public enum BlockStyle {
                 attributes[.foregroundColor] = Theme.nsLink
                 attributes[.pithPageId] = pageId
             case let .tag(pageId):
-                attributes[.foregroundColor] = Theme.nsLink
+                attributes[.foregroundColor] = Theme.nsTag
                 attributes[.pithPageId] = pageId
             case .blockRef:
                 attributes.merge(blockRefAttributes) { $1 }
             }
             if closed {
-                attributes[.foregroundColor] = NSColor(hex: 0x7A7C83)
+                attributes[.foregroundColor] = Theme.nsClosedText
                 attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
-                attributes[.strikethroughColor] = NSColor(hex: 0x5D5F66)
+                attributes[.strikethroughColor] = Theme.nsClosedStrike
             }
             result.append(NSAttributedString(string: run.display, attributes: attributes))
         }

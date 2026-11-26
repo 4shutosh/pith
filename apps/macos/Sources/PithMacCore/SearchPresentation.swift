@@ -13,7 +13,7 @@ public enum SearchPresentation {
         for segment in segments {
             var part = AttributedString(segment.text)
             if segment.highlighted {
-                part.backgroundColor = Theme.accent.opacity(0.35)
+                part.backgroundColor = Theme.accent.opacity(0.24)
                 part.foregroundColor = Theme.textStrong
             }
             result.append(part)

@@ -23,18 +23,17 @@ public enum InlineFormatter {
         case let .code(text):
             var code = AttributedString(text)
             code.font = Typography.mono(13.5)
-            code.backgroundColor = Theme.elevated
+            code.foregroundColor = Theme.codeText
+            code.backgroundColor = Theme.codeBg
             return code
         case let .task(state, _):
             var label = AttributedString(state)
             label.foregroundColor = Theme.textTertiary
             return label
         case let .pageLink(pageId, title, _):
-            return link(title, pageId: pageId, muted: muted)
+            return link(title, pageId: pageId, color: Theme.link, muted: muted)
         case let .tag(pageId, title, _):
-            var tag = link("#\(title)", pageId: pageId, muted: muted)
-            tag.backgroundColor = Theme.accent.opacity(0.14)
-            return tag
+            return link("#\(title)", pageId: pageId, color: Theme.tag, muted: muted)
         case let .blockRef(_, text, _):
             var ref = AttributedString(text)
             ref.underlineStyle = Text.LineStyle(pattern: .dash, color: Theme.bullet)
@@ -42,9 +41,9 @@ public enum InlineFormatter {
         }
     }
 
-    private static func link(_ display: String, pageId: String?, muted: Bool) -> AttributedString {
+    private static func link(_ display: String, pageId: String?, color: Color, muted: Bool) -> AttributedString {
         var span = AttributedString(display)
-        span.foregroundColor = muted ? Theme.textTertiary : Theme.link
+        span.foregroundColor = muted ? Theme.textTertiary : color
         if let pageId, let url = URL(string: "pith://page/\(pageId)") {
             span.link = url
         }

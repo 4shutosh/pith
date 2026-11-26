@@ -2,33 +2,107 @@ import AppKit
 import CoreText
 import SwiftUI
 
-public enum Theme {
-    public static let window = Color(hex: 0x0B0B0C)
-    public static let panel = Color(hex: 0x121214)
-    public static let panelBorder = Color(hex: 0x1F1F22)
-    public static let divider = Color(hex: 0x1C1C1F)
-    public static let selected = Color(hex: 0x1C1C1F)
-    public static let hover = Color(hex: 0x161618)
-    public static let elevated = Color(hex: 0x161618)
-    public static let elevatedBorder = Color(hex: 0x2A2A2E)
-    public static let rowSelected = Color(hex: 0x222226)
-    public static let editingFill = Color(hex: 0x18181B)
-    public static let editingBorder = Color(hex: 0x26262A)
-    public static let guide = Color(hex: 0x232326)
-    public static let textStrong = Color(hex: 0xF4F4F6)
-    public static let textPrimary = Color(hex: 0xE8E8EA)
-    public static let textBody = Color(hex: 0xD4D5D9)
-    public static let textSecondary = Color(hex: 0x9A9CA3)
-    public static let textTertiary = Color(hex: 0x7A7C83)
-    public static let bullet = Color(hex: 0x6C6E75)
-    public static let accent = Color(hex: 0x5E6AD2)
-    public static let link = Color(hex: 0x9AA2F5)
-    public static let inProgress = Color(hex: 0xE2B340)
-    public static let healthy = Color(hex: 0x4CB782)
-    public static let danger = Color(hex: 0xEB5757)
+public enum ThemeMode: String, CaseIterable {
+    case system
+    case light
+    case dark
 
-    public static let nsTextStrong = NSColor(hex: 0xF4F4F6)
-    public static let nsLink = NSColor(hex: 0x9AA2F5)
+    public var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    public var appearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+
+    public var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    public static func toggled(currentlyDark: Bool) -> ThemeMode {
+        currentlyDark ? .light : .dark
+    }
+
+    public static func isDark(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+}
+
+public enum Theme {
+    public static let nsSidebar = adaptive(dark: 0x131210, light: 0xF3F1EC)
+    public static let nsCanvas = adaptive(dark: 0x181715, light: 0xFBFAF7)
+    public static let nsDivider = adaptive(dark: 0x252320, light: 0xE7E3DB)
+    public static let nsHover = adaptive(dark: 0x22201D, light: 0xEFECE6)
+    public static let nsSelected = adaptive(dark: 0x292622, light: 0xE8E4DC)
+    public static let nsElevated = adaptive(dark: 0x1F1D1A, light: 0xFFFFFF)
+    public static let nsElevatedBorder = adaptive(dark: 0x2E2B26, light: 0xE0DCD3)
+    public static let nsRowSelected = adaptive(dark: 0x292622, light: 0xEFECE6)
+    public static let nsGuide = adaptive(dark: 0x292723, light: 0xE6E2DA)
+    public static let nsCodeBg = adaptive(dark: 0x23211D, light: 0xF1EEE8)
+
+    public static let nsTextStrong = adaptive(dark: 0xF2EFE9, light: 0x1B1916)
+    public static let nsTextPrimary = adaptive(dark: 0xDDD9D0, light: 0x2A2723)
+    public static let nsTextBody = adaptive(dark: 0xC7C2B8, light: 0x3B3731)
+    public static let nsTextSecondary = adaptive(dark: 0x9A948A, light: 0x6A645B)
+    public static let nsTextTertiary = adaptive(dark: 0x6F6A61, light: 0x8E887E)
+    public static let nsBullet = adaptive(dark: 0x5A554E, light: 0xB3ADA3)
+
+    public static let nsAccent = adaptive(dark: 0xE0A463, light: 0xA8641C)
+    public static let nsLink = adaptive(dark: 0xE0A463, light: 0xA35F17)
+    public static let nsTag = adaptive(dark: 0x84B59F, light: 0x3C7A5E)
+    public static let nsCodeText = adaptive(dark: 0xD6B89A, light: 0x8A5528)
+    public static let nsDone = adaptive(dark: 0x73AD8F, light: 0x3D8562)
+    public static let nsDanger = adaptive(dark: 0xD96B6B, light: 0xBF4540)
+
+    public static let nsBracket = nsBullet
+    public static let nsCaret = nsAccent
+    public static let nsSelection = adaptive(dark: 0xE0A463, light: 0xD9964A, alpha: 0.24)
+    public static let nsClosedText = nsTextTertiary
+    public static let nsClosedStrike = nsBullet
+
+    public static let sidebar = Color(nsColor: nsSidebar)
+    public static let canvas = Color(nsColor: nsCanvas)
+    public static let divider = Color(nsColor: nsDivider)
+    public static let hover = Color(nsColor: nsHover)
+    public static let selected = Color(nsColor: nsSelected)
+    public static let elevated = Color(nsColor: nsElevated)
+    public static let elevatedBorder = Color(nsColor: nsElevatedBorder)
+    public static let rowSelected = Color(nsColor: nsRowSelected)
+    public static let guide = Color(nsColor: nsGuide)
+    public static let codeBg = Color(nsColor: nsCodeBg)
+
+    public static let textStrong = Color(nsColor: nsTextStrong)
+    public static let textPrimary = Color(nsColor: nsTextPrimary)
+    public static let textBody = Color(nsColor: nsTextBody)
+    public static let textSecondary = Color(nsColor: nsTextSecondary)
+    public static let textTertiary = Color(nsColor: nsTextTertiary)
+    public static let bullet = Color(nsColor: nsBullet)
+
+    public static let accent = Color(nsColor: nsAccent)
+    public static let link = Color(nsColor: nsLink)
+    public static let tag = Color(nsColor: nsTag)
+    public static let codeText = Color(nsColor: nsCodeText)
+    public static let inProgress = Color(nsColor: nsAccent)
+    public static let done = Color(nsColor: nsDone)
+    public static let danger = Color(nsColor: nsDanger)
+
+    static func adaptive(dark: UInt32, light: UInt32, alpha: CGFloat = 1) -> NSColor {
+        NSColor(name: nil) { appearance in
+            NSColor(hex: ThemeMode.isDark(appearance) ? dark : light).withAlphaComponent(alpha)
+        }
+    }
 }
 
 public enum Typography {

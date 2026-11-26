@@ -7,29 +7,64 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var controller: OutlinerController
     @Binding var showSearch: Bool
+    @Binding var showSidebar: Bool
+    @Binding var themeMode: ThemeMode
     private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
-    var body: some View {
-        HStack(spacing: 0) {
-            Sidebar(controller: controller, showSearch: $showSearch)
-                .frame(width: 244)
+    private static let sidebarWidth: CGFloat = 216
 
-            Group {
-                if controller.isShowingAllPages {
-                    AllPagesView(controller: controller)
-                } else {
-                    OutlinerView(controller: controller)
+    var body: some View {
+        GeometryReader { proxy in
+            let layout = editorLayout(windowWidth: proxy.size.width, sidebarOpen: showSidebar)
+
+            ZStack(alignment: .leading) {
+                Group {
+                    if controller.isShowingAllPages {
+                        AllPagesView(
+                            controller: controller,
+                            contentLeading: layout.leading,
+                            contentWidth: layout.width
+                        )
+                    } else {
+                        OutlinerView(
+                            controller: controller,
+                            contentLeading: layout.leading,
+                            contentWidth: layout.width,
+                            headerLeading: showSidebar ? Self.sidebarWidth + 20 : 78
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.canvas)
+
+                HStack(spacing: 0) {
+                    Sidebar(controller: controller, showSearch: $showSearch)
+                        .frame(width: Self.sidebarWidth)
+                        .background(Theme.sidebar)
+                    Rectangle()
+                        .fill(Theme.divider)
+                        .frame(width: 1)
+                }
+                .offset(x: showSidebar ? 0 : -(Self.sidebarWidth + 1))
+                .allowsHitTesting(showSidebar)
+
+                VStack {
+                    Spacer()
+                    HStack {
+                        SidebarToggleButton(label: showSidebar ? "Hide sidebar" : "Show sidebar") {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                showSidebar.toggle()
+                            }
+                        }
+                        ThemeToggleButton(mode: $themeMode)
+                        Spacer()
+                    }
+                    .padding(.leading, 10)
+                    .padding(.bottom, 10)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.panel)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.panelBorder, lineWidth: 1))
-            .padding(.top, 8)
-            .padding(.trailing, 8)
-            .padding(.bottom, 8)
         }
-        .background(Theme.window)
+        .background(Theme.canvas)
         .ignoresSafeArea()
         .sheet(isPresented: $showSearch) {
             QuickSearchSheet(controller: controller, isPresented: $showSearch)
@@ -37,6 +72,15 @@ struct ContentView: View {
         .onReceive(timer) { _ in
             controller.pollExternalChanges()
         }
+    }
+
+    private func editorLayout(windowWidth: CGFloat, sidebarOpen: Bool) -> (leading: CGFloat, width: CGFloat) {
+        let sidebar: CGFloat = sidebarOpen ? Self.sidebarWidth : 0
+        let available = max(320, windowWidth - sidebar)
+        let width = min(680, max(320, available - 72))
+        let centered = (windowWidth - width) / 2
+        let leading = max(centered, sidebar + 36)
+        return (leading, width)
     }
 }
 
@@ -52,6 +96,8 @@ struct PithMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var controller: OutlinerController
     @State private var showSearch = false
+    @State private var showSidebar = true
+    @AppStorage("pith.theme") private var themeMode: ThemeMode = .system
 
     init() {
         Typography.registerBundledFonts()
@@ -73,9 +119,11 @@ struct PithMacApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(controller: controller, showSearch: $showSearch)
-                .frame(minWidth: 900, minHeight: 560)
-                .preferredColorScheme(.dark)
+            ContentView(controller: controller, showSearch: $showSearch, showSidebar: $showSidebar, themeMode: $themeMode)
+                .frame(minWidth: 820, minHeight: 540)
+                .preferredColorScheme(themeMode.colorScheme)
+                .onAppear { NSApp.appearance = themeMode.appearance }
+                .onChange(of: themeMode) { NSApp.appearance = $0.appearance }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -92,6 +140,24 @@ struct PithMacApp: App {
                     .keyboardShortcut("j", modifiers: .command)
                 Button("All pages") { controller.showAllPages() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
+                Divider()
+                Button(showSidebar ? "Hide Sidebar" : "Show Sidebar") {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        showSidebar.toggle()
+                    }
+                }
+                .keyboardShortcut("\\", modifiers: .command)
+            }
+            CommandGroup(after: .sidebar) {
+                Picker("Appearance", selection: $themeMode) {
+                    ForEach(ThemeMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                Button("Toggle Light/Dark") {
+                    themeMode = ThemeMode.toggled(currentlyDark: ThemeMode.isDark(NSApp.effectiveAppearance))
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
             }
         }
     }

@@ -62,6 +62,15 @@ public enum BlockPresentation {
         return EditableBlock(status: status, prefix: prefix, text: rest.map(source).joined())
     }
 
+    public static func combine(prefix: String, body: String) -> String {
+        guard !prefix.isEmpty else { return body }
+        guard !body.isEmpty else { return prefix }
+        if prefix.last?.isWhitespace == true || body.first?.isWhitespace == true {
+            return prefix + body
+        }
+        return prefix + " " + body
+    }
+
     public static func runs(_ spans: [FfiSpan]) -> (status: TaskStatus?, runs: [DisplayRun]) {
         let (status, _, rest) = splitTask(spans)
         return (status, rest.flatMap(displayRuns))

@@ -284,4 +284,43 @@ final class OutlinerTests: XCTestCase {
         XCTAssertEqual(changes, 0)
         XCTAssertEqual(controller.draftText, "Hel")
     }
+
+    func testTypingIntoAnEmptyTaskKeepsTheSpaceAfterTheKeyword() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+
+        controller.cycleTask(caret: 0)
+        try type(controller, "Make things work")
+        controller.handleReturn(at: TextOffsets.length("Make things work"))
+
+        XCTAssertEqual(controller.rows[0].renderedContent, "TODO Make things work")
+        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].spans).status, .todo)
+    }
+
+    func testTypingIntoAnEmptyTaskAndHittingReturnBeforeFlushKeepsTheSpace() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+
+        controller.cycleTask(caret: 0)
+        let id = try XCTUnwrap(controller.focusedBlockId)
+        controller.updateDraft(blockId: id, text: "Make things work", isComposing: false)
+        controller.handleReturn(at: TextOffsets.length("Make things work"))
+
+        XCTAssertEqual(controller.rows[0].renderedContent, "TODO Make things work")
+        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].spans).status, .todo)
+    }
+
+    func testTypingTodoManuallyDoesNotDoubleThePrefixOnSubsequentSaves() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+
+        try type(controller, "TODO Make")
+        try type(controller, "TODO Make things work")
+
+        XCTAssertEqual(controller.rows[0].renderedContent, "TODO Make things work")
+        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].spans).status, .todo)
+    }
 }

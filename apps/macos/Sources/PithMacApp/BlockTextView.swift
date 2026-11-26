@@ -196,10 +196,9 @@ struct BlockTextView: NSViewRepresentable {
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = false
-        textView.insertionPointColor = NSColor(hex: 0xF4F4F6)
+        textView.insertionPointColor = Theme.nsCaret
         textView.selectedTextAttributes = [
-            .backgroundColor: NSColor(hex: 0x5E6AD2).withAlphaComponent(0.55),
-            .foregroundColor: NSColor.white,
+            .backgroundColor: Theme.nsSelection,
         ]
         textView.defaultParagraphStyle = BlockStyle.paragraph
         textView.typingAttributes = BlockStyle.editingAttributes
@@ -295,7 +294,7 @@ struct BlockTextView: NSViewRepresentable {
             let popover = NSPopover()
             popover.behavior = .applicationDefined
             popover.animates = false
-            popover.appearance = NSAppearance(named: .darkAqua)
+            popover.appearance = textView.effectiveAppearance
             popover.contentViewController = NSHostingController(rootView: list)
             popover.show(relativeTo: textView.caretRectInView(), of: textView, preferredEdge: .maxY)
             self.popover = popover

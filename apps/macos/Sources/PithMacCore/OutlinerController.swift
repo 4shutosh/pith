@@ -212,8 +212,9 @@ public final class OutlinerController: ObservableObject {
         let interval = signposter.beginInterval("save")
         defer { signposter.endInterval("save", interval) }
         do {
+            let content = BlockPresentation.combine(prefix: editPrefix, body: draftText)
             let result = try graph.applyOps(
-                ops: [.updateBlock(id: blockId, content: editPrefix + draftText, expectedVersion: draftBaseVersion)],
+                ops: [.updateBlock(id: blockId, content: content, expectedVersion: draftBaseVersion)],
                 meta: meta("edit block", group: undoGroup)
             )
             if result.pagesChanged {
@@ -222,7 +223,12 @@ public final class OutlinerController: ObservableObject {
                 try refreshRow(blockId)
             }
             if let saved = rows.first(where: { $0.id == blockId }) {
-                rebase(on: saved)
+                if editPrefix.isEmpty {
+                    draftBaseVersion = saved.version
+                    draftBaseText = draftText
+                } else {
+                    rebase(on: saved)
+                }
             }
         } catch {
             report(error)
@@ -237,7 +243,7 @@ public final class OutlinerController: ObservableObject {
             try graph.splitBlock(
                 blockId: blockId,
                 baseVersion: draftBaseVersion,
-                before: editPrefix + before,
+                before: BlockPresentation.combine(prefix: editPrefix, body: before),
                 after: after,
                 meta: meta("split block")
             )
@@ -428,7 +434,7 @@ public final class OutlinerController: ObservableObject {
             guard let outcome = try graph.pasteText(
                 blockId: blockId,
                 baseVersion: draftBaseVersion,
-                before: editPrefix + before,
+                before: BlockPresentation.combine(prefix: editPrefix, body: before),
                 after: after,
                 pasted: pasted,
                 meta: meta("paste")

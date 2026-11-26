@@ -1,3 +1,4 @@
+import AppKit
 import PithCore
 import PithMacCore
 import SwiftUI
@@ -6,6 +7,8 @@ struct QuickSearchSheet: View {
     @ObservedObject var controller: OutlinerController
     @Binding var isPresented: Bool
     @State private var query: String = ""
+    @State private var selected: Int = 0
+    @State private var keyMonitor: Any?
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -19,18 +22,32 @@ struct QuickSearchSheet: View {
         controller.searchHits.filter { if case .block = $0 { return true } else { return false } }
     }
 
+    private var orderedHits: [FfiSearchHit] {
+        pageHits + blockHits
+    }
+
+    private var offersCreate: Bool {
+        SearchPresentation.offersCreatePage(query: query, hits: controller.searchHits)
+    }
+
+    private var choiceCount: Int {
+        orderedHits.count + (offersCreate ? 1 : 0)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 15))
+                SearchIcon(size: 15)
                     .foregroundColor(Theme.textTertiary)
                 TextField("Search or create a page", text: $query)
                     .textFieldStyle(.plain)
                     .font(Typography.ui(17))
                     .foregroundColor(Theme.textStrong)
-                    .onChange(of: query) { controller.runSearch($0) }
-                    .onSubmit(openFirst)
+                    .onChange(of: query) {
+                        controller.runSearch($0)
+                        selected = 0
+                    }
+                    .onSubmit(openSelected)
                 if !controller.searchHits.isEmpty {
                     Text("\(controller.searchHits.count) results")
                         .font(Typography.ui(12))
@@ -41,28 +58,36 @@ struct QuickSearchSheet: View {
             .frame(height: 56)
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.divider).frame(height: 1) }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    if !pageHits.isEmpty {
-                        GroupLabel(title: "Pages")
-                        ForEach(Array(pageHits.enumerated()), id: \.offset) { index, hit in
-                            HitRow(hit: hit, isFirst: index == 0) { open(hit) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if !pageHits.isEmpty {
+                            GroupLabel(title: "Pages")
+                            ForEach(Array(pageHits.enumerated()), id: \.offset) { index, hit in
+                                HitRow(hit: hit, isSelected: selected == index) { open(hit) }
+                                    .id(index)
+                            }
+                        }
+                        if !blockHits.isEmpty {
+                            GroupLabel(title: "Blocks")
+                            ForEach(Array(blockHits.enumerated()), id: \.offset) { index, hit in
+                                let position = pageHits.count + index
+                                HitRow(hit: hit, isSelected: selected == position) { open(hit) }
+                                    .id(position)
+                            }
+                        }
+                        if offersCreate {
+                            CreatePageRow(title: trimmedQuery, isSelected: selected == orderedHits.count, action: createPage)
+                                .id(orderedHits.count)
                         }
                     }
-                    if !blockHits.isEmpty {
-                        GroupLabel(title: "Blocks")
-                        ForEach(Array(blockHits.enumerated()), id: \.offset) { index, hit in
-                            HitRow(hit: hit, isFirst: pageHits.isEmpty && index == 0) { open(hit) }
-                        }
-                    }
-                    if SearchPresentation.offersCreatePage(query: query, hits: controller.searchHits) {
-                        CreatePageRow(title: trimmedQuery, action: createPage)
-                    }
+                    .padding(6)
                 }
-                .padding(6)
+                .onChange(of: selected) { proxy.scrollTo($0) }
             }
 
             HStack(spacing: 18) {
+                KeyHint(keys: "↑↓", label: "Move")
                 KeyHint(keys: "↵", label: "Open")
                 KeyHint(keys: "esc", label: "Close")
                 Spacer()
@@ -73,7 +98,35 @@ struct QuickSearchSheet: View {
         }
         .frame(width: 680, height: 500)
         .background(Theme.elevated)
-        .preferredColorScheme(.dark)
+        .onAppear(perform: installKeyMonitor)
+        .onDisappear(perform: removeKeyMonitor)
+    }
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            switch event.keyCode {
+            case 125:
+                moveSelection(1)
+                return nil
+            case 126:
+                moveSelection(-1)
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
+    }
+
+    private func moveSelection(_ delta: Int) {
+        guard choiceCount > 0 else { return }
+        selected = (selected + delta + choiceCount) % choiceCount
     }
 
     private func open(_ hit: FfiSearchHit) {
@@ -81,9 +134,9 @@ struct QuickSearchSheet: View {
         isPresented = false
     }
 
-    private func openFirst() {
-        if let first = controller.searchHits.first {
-            open(first)
+    private func openSelected() {
+        if orderedHits.indices.contains(selected) {
+            open(orderedHits[selected])
         } else if !trimmedQuery.isEmpty {
             createPage()
         }
@@ -110,7 +163,7 @@ private struct GroupLabel: View {
 
 private struct HitRow: View {
     let hit: FfiSearchHit
-    let isFirst: Bool
+    let isSelected: Bool
     let action: () -> Void
     @State private var isHovered = false
 
@@ -142,7 +195,7 @@ private struct HitRow: View {
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(isFirst || isHovered ? Theme.rowSelected : Color.clear)
+                    .fill(isSelected || isHovered ? Theme.rowSelected : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -154,26 +207,30 @@ private struct HitRow: View {
     private var icon: some View {
         switch hit {
         case .page:
-            Image(systemName: "doc.text")
-                .font(.system(size: 13))
-                .foregroundColor(Theme.textSecondary)
+            Circle()
+                .fill(isSelected || isHovered ? Theme.accent : Theme.bullet)
+                .frame(width: 5, height: 5)
+                .padding(.top, 7)
         case .block:
-            Circle().fill(Theme.bullet).frame(width: 5, height: 5).padding(.top, 20)
+            Circle()
+                .stroke(Theme.bullet, lineWidth: 1.2)
+                .frame(width: 5.5, height: 5.5)
+                .padding(.top, 20)
         }
     }
 }
 
 private struct CreatePageRow: View {
     let title: String
+    let isSelected: Bool
     let action: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: "doc.badge.plus")
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.textSecondary)
+                PlusIcon()
+                    .foregroundColor(Theme.accent)
                     .frame(width: 16)
                 Text("Create page")
                     .font(Typography.ui(14, .medium))
@@ -185,7 +242,7 @@ private struct CreatePageRow: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(isHovered ? Theme.rowSelected : Color.clear))
+            .background(RoundedRectangle(cornerRadius: 8).fill(isSelected || isHovered ? Theme.rowSelected : Color.clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
