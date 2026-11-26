@@ -59,6 +59,26 @@ impl Fixture {
     fn version(&self, id: Id) -> Result<i64> {
         Ok(self.store.get_block(id)?.context("block")?.version)
     }
+
+    fn texts(&self) -> Result<Vec<String>> {
+        Ok(self
+            .store
+            .read_page_window(self.page, 0, 100)?
+            .rows
+            .into_iter()
+            .map(|r| r.rendered_content)
+            .collect())
+    }
+
+    fn depths(&self) -> Result<Vec<u32>> {
+        Ok(self
+            .store
+            .read_page_window(self.page, 0, 100)?
+            .rows
+            .into_iter()
+            .map(|r| r.depth)
+            .collect())
+    }
 }
 
 #[test]
@@ -366,5 +386,153 @@ fn task_commands_respect_the_editor_base_version() -> Result<()> {
         .cycle_task(a, 1, &user_meta("stale cycle"))
         .expect_err("stale version must be rejected");
     assert!(matches!(err, Error::VersionMismatch { .. }));
+    Ok(())
+}
+
+#[test]
+fn bulk_delete_prunes_descendants_and_undoes_in_one_step() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (a, ak) = f.block(None, None, "A")?;
+    let (a1, _) = f.block(Some(a), None, "A1")?;
+    let (b, bk) = f.block(None, Some(&ak), "B")?;
+    let (_c, _) = f.block(None, Some(&bk), "C")?;
+
+    let applied = f
+        .store
+        .delete_blocks(&[a1, b, a], &user_meta("delete selection"))?;
+    assert!(applied.is_some());
+    assert_eq!(f.texts()?, vec!["C"]);
+
+    f.store.undo_last(&user_meta("undo"), false)?;
+    assert_eq!(f.texts()?, vec!["A", "A1", "B", "C"]);
+    Ok(())
+}
+
+#[test]
+fn bulk_indent_and_outdent_preserve_order_in_one_undo_step() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (a, ak) = f.block(None, None, "A")?;
+    let (b, bk) = f.block(None, Some(&ak), "B")?;
+    let (c, _) = f.block(None, Some(&bk), "C")?;
+
+    f.store.indent_blocks(&[c, b], &user_meta("indent"))?;
+    assert_eq!(f.texts()?, vec!["A", "B", "C"]);
+    assert_eq!(f.depths()?, vec![0, 1, 1]);
+    assert_eq!(f.store.get_block(b)?.context("b")?.parent_id, Some(a));
+    assert_eq!(f.store.get_block(c)?.context("c")?.parent_id, Some(a));
+
+    f.store.outdent_blocks(&[b, c], &user_meta("outdent"))?;
+    assert_eq!(f.texts()?, vec!["A", "B", "C"]);
+    assert_eq!(f.depths()?, vec![0, 0, 0]);
+
+    f.store.undo_last(&user_meta("undo outdent"), false)?;
+    assert_eq!(f.depths()?, vec![0, 1, 1]);
+    f.store.undo_last(&user_meta("undo indent"), false)?;
+    assert_eq!(f.depths()?, vec![0, 0, 0]);
+    Ok(())
+}
+
+#[test]
+fn bulk_move_up_and_down_shifts_selection_in_one_step() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (_a, ak) = f.block(None, None, "A")?;
+    let (b, bk) = f.block(None, Some(&ak), "B")?;
+    let (c, ck) = f.block(None, Some(&bk), "C")?;
+    let (_d, _) = f.block(None, Some(&ck), "D")?;
+
+    f.store.move_blocks_up(&[c, b], &user_meta("move up"))?;
+    assert_eq!(f.texts()?, vec!["B", "C", "A", "D"]);
+
+    f.store.move_blocks_down(&[b, c], &user_meta("move down"))?;
+    assert_eq!(f.texts()?, vec!["A", "B", "C", "D"]);
+
+    f.store.undo_last(&user_meta("undo move down"), false)?;
+    assert_eq!(f.texts()?, vec!["B", "C", "A", "D"]);
+    f.store.undo_last(&user_meta("undo move up"), false)?;
+    assert_eq!(f.texts()?, vec!["A", "B", "C", "D"]);
+    Ok(())
+}
+
+#[test]
+fn bulk_cycle_tasks_and_markdown_export() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (a, ak) = f.block(None, None, "First")?;
+    let (a1, _) = f.block(Some(a), None, "Child")?;
+    let (b, _) = f.block(None, Some(&ak), "Second")?;
+
+    f.store.cycle_tasks(&[b, a], &user_meta("todo"))?;
+    assert_eq!(f.texts()?, vec!["TODO First", "Child", "TODO Second"]);
+
+    f.store.cycle_tasks(&[a, b], &user_meta("doing"))?;
+    assert_eq!(f.texts()?, vec!["DOING First", "Child", "DOING Second"]);
+
+    assert_eq!(
+        f.store.blocks_markdown(&[a, a1, b])?,
+        "- DOING First\n  - Child\n- DOING Second"
+    );
+
+    f.store.undo_last(&user_meta("undo doing"), false)?;
+    assert_eq!(f.texts()?, vec!["TODO First", "Child", "TODO Second"]);
+    Ok(())
+}
+
+#[test]
+fn bulk_commands_refuse_a_selection_spanning_pages() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (a, _) = f.block(None, None, "A")?;
+    let other_page = Id::new();
+    let other = Id::new();
+    f.store.apply_ops(
+        &[
+            Op::CreatePage {
+                id: other_page,
+                title: "Elsewhere".to_string(),
+                journal_day: None,
+                document_mode: false,
+            },
+            Op::InsertBlock {
+                id: other,
+                page_id: other_page,
+                parent_id: None,
+                order_key: order::between(None, None)?,
+                content: "X".to_string(),
+            },
+        ],
+        &user_meta("other page"),
+    )?;
+
+    let err = f
+        .store
+        .delete_blocks(&[a, other], &user_meta("delete"))
+        .expect_err("mixed pages are rejected");
+    assert!(matches!(err, Error::BlocksOnDifferentPages { block_id, .. } if block_id == other));
+    assert_eq!(f.texts()?, vec!["A"]);
+    assert!(
+        f.store
+            .get_block(other)?
+            .context("other")?
+            .deleted_at
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn bulk_move_with_gaps_moves_each_run_past_its_neighbour() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (_a, ak) = f.block(None, None, "A")?;
+    let (b, bk) = f.block(None, Some(&ak), "B")?;
+    let (_c, ck) = f.block(None, Some(&bk), "C")?;
+    let (d, dk) = f.block(None, Some(&ck), "D")?;
+    let (_e, _) = f.block(None, Some(&dk), "E")?;
+
+    f.store.move_blocks_down(&[b, d], &user_meta("down"))?;
+    assert_eq!(f.texts()?, vec!["A", "C", "B", "E", "D"]);
+
+    f.store.move_blocks_up(&[b, d], &user_meta("up"))?;
+    assert_eq!(f.texts()?, vec!["A", "B", "C", "D", "E"]);
+
+    f.store.move_blocks_up(&[b, d], &user_meta("up"))?;
+    assert_eq!(f.texts()?, vec!["B", "A", "D", "C", "E"]);
     Ok(())
 }

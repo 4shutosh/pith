@@ -125,7 +125,7 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
 
 Saves during one editing session share an `undo_group`, so a typing burst is one undo step.
 
-**Editor commands live in the core.** Split, merge, indent, outdent, move up/down, paste, append, reveal and copy-as-Markdown compile to canonical ops (or reads) using the full tree, never the rows a UI happens to have loaded. Autocomplete (`[[`, `#`, `((`) detection and insertion, and bracket auto-pairing, are core functions too.
+**Editor commands live in the core.** Split, merge, indent, outdent, move up/down, paste, append, reveal and copy-as-Markdown, and their multi-block forms over a selection (one page, one transaction, one undo step), compile to canonical ops (or reads) using the full tree, never the rows a UI happens to have loaded. Autocomplete (`[[`, `#`, `((`) detection and insertion, and bracket auto-pairing, are core functions too.
 
 **Saving keeps link identity.** When text that came from a block is saved (edit, split, merge), titles the block already linked resolve to the same page ids, including deleted pages, so editing never mints a duplicate page and a deleted page stays restorable. Only titles new to the text are looked up among live pages (and created if missing). Edits carry the version the editor started from, so a change made elsewhere surfaces as a conflict instead of being overwritten. A journal page is created together with its first block, so opening the app writes nothing.
 

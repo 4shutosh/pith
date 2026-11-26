@@ -39,6 +39,10 @@ pub enum Error {
         parent_id: Id,
         page_id: Id,
     },
+    BlocksOnDifferentPages {
+        block_id: Id,
+        page_id: Id,
+    },
     TxnNotFound(Id),
     AlreadyUndone(Id),
     ReservedOrigin(Origin),
@@ -97,6 +101,9 @@ impl Error {
             Self::CycleDetected(id) => {
                 format!("move would create a cycle for block {}", show_id(*id))
             }
+            Self::BlocksOnDifferentPages { block_id, page_id } => {
+                format!("block {block_id} is not on page {page_id} like the rest of the selection")
+            }
             Self::ParentPageMismatch { parent_id, page_id } => format!(
                 "parent {} does not belong to page {}",
                 show_id(*parent_id),
@@ -141,6 +148,7 @@ impl Error {
             Self::VersionMismatch { .. } => "version_mismatch",
             Self::CycleDetected(_) => "cycle_detected",
             Self::ParentPageMismatch { .. } => "parent_page_mismatch",
+            Self::BlocksOnDifferentPages { .. } => "blocks_on_different_pages",
             Self::TxnNotFound(_) => "txn_not_found",
             Self::AlreadyUndone(_) => "already_undone",
             Self::ReservedOrigin(_) => "reserved_origin",

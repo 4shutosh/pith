@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::api::{MarkdownNode, parse_markdown_tree};
 use crate::error::{Error, Result};
 use crate::id::Id;
@@ -6,7 +8,7 @@ use crate::ops::Op;
 use crate::order;
 use crate::parser;
 use crate::store::{Store, known_links};
-use crate::types::{Block, EditOutcome, TxMeta};
+use crate::types::{ApplyResult, Block, EditOutcome, TxMeta};
 
 impl Store {
     pub fn start_journal(&mut self, date: Option<&str>, meta: &TxMeta) -> Result<EditOutcome> {
@@ -435,6 +437,282 @@ impl Store {
         let mut lines = Vec::new();
         self.write_markdown(&block, 0, &mut lines)?;
         Ok(lines.join("\n"))
+    }
+
+    pub fn blocks_markdown(&self, ids: &[Id]) -> Result<String> {
+        let roots = self.selected_roots_in_order(ids)?;
+        let mut lines = Vec::new();
+        for root in &roots {
+            self.write_markdown(root, 0, &mut lines)?;
+        }
+        Ok(lines.join("\n"))
+    }
+
+    pub fn delete_blocks(&mut self, ids: &[Id], meta: &TxMeta) -> Result<Option<ApplyResult>> {
+        let roots = self.selected_roots_in_order(ids)?;
+        if roots.is_empty() {
+            return Ok(None);
+        }
+        let ops: Vec<Op> = roots
+            .iter()
+            .map(|b| Op::DeleteBlock {
+                id: b.id,
+                expected_version: Some(b.version),
+            })
+            .collect();
+        Ok(Some(self.apply_ops(&ops, meta)?))
+    }
+
+    pub fn indent_blocks(&mut self, ids: &[Id], meta: &TxMeta) -> Result<Option<ApplyResult>> {
+        let roots = self.selected_roots_in_order(ids)?;
+        if roots.is_empty() {
+            return Ok(None);
+        }
+        let page_id = roots[0].page_id;
+        let root_set: HashSet<Id> = roots.iter().map(|b| b.id).collect();
+        let mut parent_order: Vec<Option<Id>> = Vec::new();
+        let mut seen_parents: HashSet<Option<Id>> = HashSet::new();
+        for root in &roots {
+            if seen_parents.insert(root.parent_id) {
+                parent_order.push(root.parent_id);
+            }
+        }
+
+        let mut ops = Vec::new();
+        let mut expanded: HashSet<Id> = HashSet::new();
+        let mut last_child_key: HashMap<Id, Option<String>> = HashMap::new();
+
+        for parent_id in parent_order {
+            let siblings = self.list_children(page_id, parent_id)?;
+            let mut last_unselected: Option<Block> = None;
+            for sibling in &siblings {
+                if root_set.contains(&sibling.id) {
+                    if let Some(target) = &last_unselected {
+                        if target.collapsed && expanded.insert(target.id) {
+                            ops.push(Op::SetCollapsed {
+                                id: target.id,
+                                collapsed: false,
+                            });
+                        }
+                        let lower = match last_child_key.get(&target.id) {
+                            Some(existing) => existing.clone(),
+                            None => self
+                                .list_children(page_id, Some(target.id))?
+                                .last()
+                                .map(|b| b.order_key.clone()),
+                        };
+                        let key = order::between(lower.as_deref(), None)?;
+                        last_child_key.insert(target.id, Some(key.clone()));
+                        ops.push(Op::MoveBlock {
+                            id: sibling.id,
+                            page_id,
+                            parent_id: Some(target.id),
+                            order_key: key,
+                            expected_version: Some(sibling.version),
+                        });
+                    }
+                } else {
+                    last_unselected = Some(sibling.clone());
+                }
+            }
+        }
+
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.apply_ops(&ops, meta)?))
+    }
+
+    pub fn outdent_blocks(&mut self, ids: &[Id], meta: &TxMeta) -> Result<Option<ApplyResult>> {
+        let roots = self.selected_roots_in_order(ids)?;
+        if roots.is_empty() {
+            return Ok(None);
+        }
+        let page_id = roots[0].page_id;
+        let mut groups: Vec<(Id, Vec<Block>)> = Vec::new();
+        for root in roots {
+            let Some(parent_id) = root.parent_id else {
+                continue;
+            };
+            if let Some((_, list)) = groups.iter_mut().find(|(p, _)| *p == parent_id) {
+                list.push(root);
+            } else {
+                groups.push((parent_id, vec![root]));
+            }
+        }
+
+        let mut ops = Vec::new();
+        for (parent_id, children) in groups {
+            let parent = self.live_block(parent_id)?;
+            let parent_siblings = self.list_children(page_id, parent.parent_id)?;
+            let upper = sibling_after(&parent_siblings, parent.id)?;
+            let mut lower = parent.order_key.clone();
+            for child in children {
+                let key = order::between(Some(&lower), upper.as_deref())?;
+                ops.push(Op::MoveBlock {
+                    id: child.id,
+                    page_id,
+                    parent_id: parent.parent_id,
+                    order_key: key.clone(),
+                    expected_version: Some(child.version),
+                });
+                lower = key;
+            }
+        }
+
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.apply_ops(&ops, meta)?))
+    }
+
+    pub fn move_blocks_up(&mut self, ids: &[Id], meta: &TxMeta) -> Result<Option<ApplyResult>> {
+        self.move_blocks_vertical(ids, true, meta)
+    }
+
+    pub fn move_blocks_down(&mut self, ids: &[Id], meta: &TxMeta) -> Result<Option<ApplyResult>> {
+        self.move_blocks_vertical(ids, false, meta)
+    }
+
+    fn move_blocks_vertical(
+        &mut self,
+        ids: &[Id],
+        up: bool,
+        meta: &TxMeta,
+    ) -> Result<Option<ApplyResult>> {
+        let roots = self.selected_roots_in_order(ids)?;
+        if roots.is_empty() {
+            return Ok(None);
+        }
+        let page_id = roots[0].page_id;
+        let root_set: HashSet<Id> = roots.iter().map(|b| b.id).collect();
+        let mut parent_order: Vec<Option<Id>> = Vec::new();
+        let mut seen_parents: HashSet<Option<Id>> = HashSet::new();
+        for root in &roots {
+            if seen_parents.insert(root.parent_id) {
+                parent_order.push(root.parent_id);
+            }
+        }
+
+        let mut ops = Vec::new();
+        for parent_id in parent_order {
+            let siblings = self.list_children(page_id, parent_id)?;
+            let mut i = 0;
+            while i < siblings.len() {
+                if !root_set.contains(&siblings[i].id) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i + 1 < siblings.len() && root_set.contains(&siblings[i + 1].id) {
+                    i += 1;
+                }
+                let end = i;
+                if up && start > 0 {
+                    let displaced = &siblings[start - 1];
+                    let lower = Some(siblings[end].order_key.as_str());
+                    let upper = siblings.get(end + 1).map(|b| b.order_key.as_str());
+                    ops.push(Op::MoveBlock {
+                        id: displaced.id,
+                        page_id,
+                        parent_id,
+                        order_key: order::between(lower, upper)?,
+                        expected_version: Some(displaced.version),
+                    });
+                } else if !up && end + 1 < siblings.len() {
+                    let displaced = &siblings[end + 1];
+                    let lower = start.checked_sub(1).map(|p| siblings[p].order_key.as_str());
+                    let upper = Some(siblings[start].order_key.as_str());
+                    ops.push(Op::MoveBlock {
+                        id: displaced.id,
+                        page_id,
+                        parent_id,
+                        order_key: order::between(lower, upper)?,
+                        expected_version: Some(displaced.version),
+                    });
+                }
+                i += 1;
+            }
+        }
+
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.apply_ops(&ops, meta)?))
+    }
+
+    pub fn cycle_tasks(&mut self, ids: &[Id], meta: &TxMeta) -> Result<Option<ApplyResult>> {
+        let blocks = self.selected_blocks_in_order(ids)?;
+        if blocks.is_empty() {
+            return Ok(None);
+        }
+        let first_rendered = self.render_content(&blocks[0].content)?;
+        let next = next_task_state(parser::parse_task_state(&first_rendered).as_deref());
+        let mut ops = Vec::with_capacity(blocks.len());
+        for block in &blocks {
+            let rendered = self.render_content(&block.content)?;
+            let updated = parser::set_task_state_in_content(&rendered, next);
+            ops.push(Op::UpdateBlock {
+                id: block.id,
+                content: self.pin_links(&updated, &[block.id])?,
+                expected_version: Some(block.version),
+            });
+        }
+        Ok(Some(self.apply_ops(&ops, meta)?))
+    }
+
+    fn selected_roots_in_order(&self, ids: &[Id]) -> Result<Vec<Block>> {
+        self.collect_selected_in_order(ids, true)
+    }
+
+    fn selected_blocks_in_order(&self, ids: &[Id]) -> Result<Vec<Block>> {
+        self.collect_selected_in_order(ids, false)
+    }
+
+    fn collect_selected_in_order(&self, ids: &[Id], roots_only: bool) -> Result<Vec<Block>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut wanted = HashSet::with_capacity(ids.len());
+        let mut page_id = None;
+        for &id in ids {
+            let block = self.live_block(id)?;
+            let expected = *page_id.get_or_insert(block.page_id);
+            if block.page_id != expected {
+                return Err(Error::BlocksOnDifferentPages {
+                    block_id: id,
+                    page_id: expected,
+                });
+            }
+            wanted.insert(id);
+        }
+        let mut out = Vec::new();
+        if let Some(pid) = page_id {
+            self.walk_selected(pid, None, &wanted, roots_only, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    fn walk_selected(
+        &self,
+        page_id: Id,
+        parent_id: Option<Id>,
+        wanted: &HashSet<Id>,
+        roots_only: bool,
+        out: &mut Vec<Block>,
+    ) -> Result<()> {
+        for child in self.list_children(page_id, parent_id)? {
+            let matched = wanted.contains(&child.id);
+            let child_id = child.id;
+            if matched {
+                out.push(child);
+                if roots_only {
+                    continue;
+                }
+            }
+            self.walk_selected(page_id, Some(child_id), wanted, roots_only, out)?;
+        }
+        Ok(())
     }
 
     fn write_markdown(&self, block: &Block, depth: usize, lines: &mut Vec<String>) -> Result<()> {

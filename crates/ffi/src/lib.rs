@@ -742,6 +742,72 @@ impl PithGraph {
         Ok(store.subtree_markdown(block_id)?)
     }
 
+    pub fn blocks_markdown(&self, block_ids: Vec<String>) -> Result<String, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.blocks_markdown(&ids)?)
+    }
+
+    pub fn delete_blocks(
+        &self,
+        block_ids: Vec<String>,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiApplyResult>, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.delete_blocks(&ids, &meta.into())?.map(Into::into))
+    }
+
+    pub fn indent_blocks(
+        &self,
+        block_ids: Vec<String>,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiApplyResult>, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.indent_blocks(&ids, &meta.into())?.map(Into::into))
+    }
+
+    pub fn outdent_blocks(
+        &self,
+        block_ids: Vec<String>,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiApplyResult>, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.outdent_blocks(&ids, &meta.into())?.map(Into::into))
+    }
+
+    pub fn move_blocks_up(
+        &self,
+        block_ids: Vec<String>,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiApplyResult>, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.move_blocks_up(&ids, &meta.into())?.map(Into::into))
+    }
+
+    pub fn move_blocks_down(
+        &self,
+        block_ids: Vec<String>,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiApplyResult>, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.move_blocks_down(&ids, &meta.into())?.map(Into::into))
+    }
+
+    pub fn cycle_tasks(
+        &self,
+        block_ids: Vec<String>,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiApplyResult>, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.cycle_tasks(&ids, &meta.into())?.map(Into::into))
+    }
+
     pub fn cycle_task(
         &self,
         block_id: String,
@@ -1011,4 +1077,8 @@ pub fn order_key_between(lower: Option<String>, upper: Option<String>) -> Result
 fn parse_id(raw: &str) -> Result<Id, FfiError> {
     let uuid = Uuid::parse_str(raw.trim()).map_err(|_| FfiError::InvalidId(raw.to_string()))?;
     Ok(Id::from_uuid(uuid))
+}
+
+fn parse_ids(raw: &[String]) -> Result<Vec<Id>, FfiError> {
+    raw.iter().map(|s| parse_id(s)).collect()
 }
