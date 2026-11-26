@@ -153,36 +153,14 @@ struct OutlinerView: View {
                     .padding(.bottom, 10)
             }
 
-            if controller.rows.isEmpty {
-                Button {
-                    controller.ensureFirstBlockAndFocus()
-                } label: {
-                    HStack(spacing: 10) {
-                        Circle().fill(Theme.bullet).frame(width: 5, height: 5).frame(width: 18)
-                        Text("Start writing…")
-                            .font(Typography.ui(15))
-                            .foregroundColor(Theme.textTertiary)
-                        Spacer()
-                    }
-                    .frame(height: 30)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, 14)
+            if controller.isJournalStream {
+                journalStream
+            } else if controller.rows.isEmpty {
+                startWriting
             } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(controller.rows, id: \.id) { row in
-                        let isFocused = controller.focusedBlockId == row.id
-                        OutlineRow(
-                            row: row,
-                            isFocused: isFocused,
-                            isSelected: controller.selectedBlockIds.contains(row.id),
-                            cursorOffset: isFocused ? controller.requestedCursorOffset : nil,
-                            cursorSeq: isFocused ? controller.cursorRequestSeq : 0,
-                            completion: isFocused ? controller.completion : nil,
-                            controller: controller
-                        )
-                        .id(row.id)
+                        outlineRow(row)
                     }
                     if controller.hasMoreRows {
                         Button {
@@ -216,6 +194,64 @@ struct OutlinerView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private var startWriting: some View {
+        Button {
+            controller.ensureFirstBlockAndFocus()
+        } label: {
+            HStack(spacing: 10) {
+                Circle().fill(Theme.bullet).frame(width: 5, height: 5).frame(width: 18)
+                Text("Start writing…")
+                    .font(Typography.ui(15))
+                    .foregroundColor(Theme.textTertiary)
+                Spacer()
+            }
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 14)
+    }
+
+    private var journalStream: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(controller.journalSections.enumerated()), id: \.offset) { index, section in
+                if index > 0 {
+                    JournalHeading(title: section.title) {
+                        controller.openJournal(date: section.title)
+                    }
+                }
+                if index == 0 && section.rowRange.isEmpty {
+                    startWriting
+                }
+                ForEach(controller.rows[section.rowRange], id: \.id) { row in
+                    outlineRow(row)
+                }
+            }
+            if controller.hasOlderJournals {
+                Text("Loading earlier days…")
+                    .font(Typography.ui(12))
+                    .foregroundColor(Theme.textTertiary)
+                    .padding(.top, 40)
+                    .padding(.leading, 40)
+                    .onAppear { controller.loadOlderJournals() }
+            }
+        }
+    }
+
+    private func outlineRow(_ row: FfiFlatBlockRow) -> some View {
+        let isFocused = controller.focusedBlockId == row.id
+        return OutlineRow(
+            row: row,
+            isFocused: isFocused,
+            isSelected: controller.selectedBlockIds.contains(row.id),
+            cursorOffset: isFocused ? controller.requestedCursorOffset : nil,
+            cursorSeq: isFocused ? controller.cursorRequestSeq : 0,
+            completion: isFocused ? controller.completion : nil,
+            controller: controller
+        )
+        .id(row.id)
     }
 
     @ViewBuilder
@@ -613,5 +649,32 @@ private struct TrailButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+    }
+}
+
+private struct JournalHeading: View {
+    let title: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle()
+                .fill(Theme.divider)
+                .frame(height: 1)
+                .padding(.bottom, 36)
+            Button(action: action) {
+                Text(title)
+                    .font(Typography.ui(22, .semibold))
+                    .tracking(-0.3)
+                    .foregroundColor(isHovered ? Theme.textStrong : Theme.textPrimary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            .help("Open \(title)")
+            .padding(.bottom, 18)
+        }
+        .padding(.top, 48)
     }
 }

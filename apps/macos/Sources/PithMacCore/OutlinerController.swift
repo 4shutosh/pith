@@ -6,12 +6,18 @@ public enum NavTarget: Equatable {
     case page(id: String, zoomedBlockId: String?)
     case pendingJournal(title: String)
     case allPages
+    case journals
 }
 
 @MainActor
 public final class OutlinerController: ObservableObject {
     @Published public var pages: [FfiPage] = []
     @Published public var journals: [FfiPage] = []
+    @Published public private(set) var isJournalStream: Bool = false
+    @Published public private(set) var journalSections: [JournalSection] = []
+    @Published public private(set) var hasOlderJournals: Bool = false
+    public var journalStreamDays: Int = 7
+    public static let journalStreamStep = 7
     @Published public var selectedPageId: String?
     @Published public var pendingJournalTitle: String?
     @Published public var rows: [FfiFlatBlockRow] = []
@@ -59,6 +65,7 @@ public final class OutlinerController: ObservableObject {
         self.actor = actor
         self.todayTitle = try journalTitle(date: nil)
         self.lastDataVersion = try graph.dataVersion()
+        self.isJournalStream = true
         try showTodayJournal()
     }
 
@@ -95,7 +102,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     public var hasMoreRows: Bool {
-        UInt64(rows.count) < totalVisible
+        !isJournalStream && UInt64(rows.count) < totalVisible
     }
 
     public var recentPages: [FfiPage] {
@@ -113,7 +120,15 @@ public final class OutlinerController: ObservableObject {
     public func reload() {
         do {
             pages = try graph.listPages()
-            journals = try graph.listJournals(limit: 30)
+            journals = try graph.listJournals(limit: UInt32(max(30, journalStreamDays + 2)))
+            if isJournalStream && zoomedBlockId == nil {
+                try loadJournalStream()
+                reconcileFocusAndSelection()
+                errorMessage = nil
+                return
+            }
+            journalSections = []
+            hasOlderJournals = false
             guard let pageId = selectedPageId else {
                 rows = []
                 totalVisible = 0
@@ -134,20 +149,54 @@ public final class OutlinerController: ObservableObject {
             rows = window.rows
             totalVisible = window.totalVisible
             backlinks = try graph.backlinks(targetId: pageId)
-            if let focused = focusedBlockId, !rows.contains(where: { $0.id == focused }) {
-                endEditing()
-            }
-            if !selectedBlockIds.isEmpty {
-                let live = Set(rows.map(\.id))
-                selectedBlockIds.formIntersection(live)
-                if selectedBlockIds.isEmpty {
-                    selectionAnchorId = nil
-                    selectionFocusId = nil
-                }
-            }
+            reconcileFocusAndSelection()
             errorMessage = nil
         } catch {
             report(error)
+        }
+    }
+
+    public func loadOlderJournals() {
+        guard isJournalStream, hasOlderJournals else { return }
+        journalStreamDays += Self.journalStreamStep
+        reload()
+    }
+
+    private func loadJournalStream() throws {
+        let interval = signposter.beginInterval("journalStream")
+        defer { signposter.endInterval("journalStream", interval) }
+        var all: [FfiFlatBlockRow] = []
+        if let todayId = selectedPageId {
+            all = try graph.readPageWindow(pageId: todayId, offset: 0, limit: pageWindowLimit).rows
+        }
+        var sections = [JournalSection(pageId: selectedPageId, title: pageTitle ?? todayTitle, rowRange: 0..<all.count)]
+        let past = journals.filter { $0.id != selectedPageId && $0.title < todayTitle }
+        for journal in past.prefix(journalStreamDays) {
+            let window = try graph.readPageWindow(pageId: journal.id, offset: 0, limit: pageWindowLimit)
+            guard !window.rows.isEmpty else { continue }
+            let start = all.count
+            all.append(contentsOf: window.rows)
+            sections.append(JournalSection(pageId: journal.id, title: journal.title, rowRange: start..<all.count))
+        }
+        rows = all
+        totalVisible = UInt64(all.count)
+        journalSections = sections
+        hasOlderJournals = past.count > journalStreamDays
+        backlinks = []
+        breadcrumb = []
+    }
+
+    private func reconcileFocusAndSelection() {
+        if let focused = focusedBlockId, !rows.contains(where: { $0.id == focused }) {
+            endEditing()
+        }
+        if !selectedBlockIds.isEmpty {
+            let live = Set(rows.map(\.id))
+            selectedBlockIds.formIntersection(live)
+            if selectedBlockIds.isEmpty {
+                selectionAnchorId = nil
+                selectionFocusId = nil
+            }
         }
     }
 
@@ -172,6 +221,7 @@ public final class OutlinerController: ObservableObject {
         pushHistoryIfNeeded(for: .page(id: pageId, zoomedBlockId: nil))
         clearSelection()
         leaveBlock()
+        isJournalStream = false
         isShowingAllPages = false
         zoomedBlockId = nil
         windowOffset = 0
@@ -182,11 +232,17 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func openTodayJournal() {
-        openJournal(date: todayTitle)
+        openJournal(date: todayTitle, asStream: true)
     }
 
     public func openJournal(date: String) {
-        let target: NavTarget = if let existing = try? graph.journalPage(date: date) {
+        openJournal(date: date, asStream: false)
+    }
+
+    private func openJournal(date: String, asStream: Bool) {
+        let target: NavTarget = if asStream {
+            .journals
+        } else if let existing = try? graph.journalPage(date: date) {
             .page(id: existing.id, zoomedBlockId: nil)
         } else {
             .pendingJournal(title: date)
@@ -194,6 +250,10 @@ public final class OutlinerController: ObservableObject {
         pushHistoryIfNeeded(for: target)
         clearSelection()
         leaveBlock()
+        isJournalStream = asStream
+        if asStream {
+            journalStreamDays = Self.journalStreamStep
+        }
         isShowingAllPages = false
         zoomedBlockId = nil
         windowOffset = 0
@@ -224,6 +284,7 @@ public final class OutlinerController: ObservableObject {
         pushHistoryIfNeeded(for: .allPages)
         clearSelection()
         leaveBlock()
+        isJournalStream = false
         isShowingAllPages = true
         run {
             pages = try graph.listPages()
@@ -300,6 +361,7 @@ public final class OutlinerController: ObservableObject {
 
     private func currentNavTarget() -> NavTarget? {
         if isShowingAllPages { return .allPages }
+        if isJournalStream && zoomedBlockId == nil { return .journals }
         if let id = selectedPageId { return .page(id: id, zoomedBlockId: zoomedBlockId) }
         if let title = pendingJournalTitle { return .pendingJournal(title: title) }
         return nil
@@ -327,7 +389,20 @@ public final class OutlinerController: ObservableObject {
         leaveBlock()
         windowOffset = 0
         rows = []
+        isJournalStream = false
         switch target {
+        case .journals:
+            isShowingAllPages = false
+            zoomedBlockId = nil
+            isJournalStream = true
+            if let today = try? graph.journalPage(date: nil) {
+                selectedPageId = today.id
+                pendingJournalTitle = nil
+            } else {
+                selectedPageId = nil
+                pendingJournalTitle = todayTitle
+            }
+            reload()
         case .allPages:
             isShowingAllPages = true
             run {
@@ -423,11 +498,15 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func selectAllBlocks() {
-        guard !rows.isEmpty else { return }
+        let anchorPage = selectionAnchorId.flatMap { id in rows.first(where: { $0.id == id })?.pageId }
+            ?? focusedBlockId.flatMap { id in rows.first(where: { $0.id == id })?.pageId }
+            ?? rows.first?.pageId
+        let pageRows = rows.filter { $0.pageId == anchorPage }
+        guard !pageRows.isEmpty else { return }
         leaveBlock()
-        selectedBlockIds = Set(rows.map(\.id))
-        selectionAnchorId = rows.first?.id
-        selectionFocusId = rows.last?.id
+        selectedBlockIds = Set(pageRows.map(\.id))
+        selectionAnchorId = pageRows.first?.id
+        selectionFocusId = pageRows.last?.id
     }
 
     public func moveSelection(up: Bool) {
@@ -539,7 +618,11 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
-    private func selectRange(fromIndex anchorIdx: Int, toIndex focusIdx: Int) {
+    private func selectRange(fromIndex anchorIdx: Int, toIndex requestedFocusIdx: Int) {
+        let page = rows[anchorIdx].pageId
+        let pageStart = rows[..<anchorIdx].lastIndex(where: { $0.pageId != page }).map { $0 + 1 } ?? 0
+        let pageEnd = rows[anchorIdx...].firstIndex(where: { $0.pageId != page }).map { $0 - 1 } ?? rows.count - 1
+        let focusIdx = min(max(requestedFocusIdx, pageStart), pageEnd)
         let lower = min(anchorIdx, focusIdx)
         let upper = max(anchorIdx, focusIdx)
         selectedBlockIds = Set(rows[lower...upper].map(\.id))
@@ -548,7 +631,8 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func ensureFirstBlockAndFocus() {
-        if let first = rows.first {
+        let pageRows = isJournalStream ? Array(rows[journalSections.first?.rowRange ?? 0..<0]) : rows
+        if let first = pageRows.first {
             focusBlock(first.id, cursorOffset: TextOffsets.length(BlockPresentation.editable(first.spans).text))
             return
         }
@@ -788,11 +872,17 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func zoom(into blockId: String) {
-        if let pageId = selectedPageId {
+        let pageId = rows.first(where: { $0.id == blockId })?.pageId ?? selectedPageId
+        if let pageId {
             pushHistoryIfNeeded(for: .page(id: pageId, zoomedBlockId: blockId))
         }
         clearSelection()
         leaveBlock()
+        isJournalStream = false
+        if let pageId {
+            selectedPageId = pageId
+            pendingJournalTitle = nil
+        }
         zoomedBlockId = blockId
         rows = []
         reload()
@@ -966,8 +1056,8 @@ public final class OutlinerController: ObservableObject {
             let currentVersion = try graph.dataVersion()
             guard currentVersion != lastDataVersion else { return }
             lastDataVersion = currentVersion
-            if selectedPageId == nil {
-                selectedPageId = try graph.journalPage(date: nil)?.id
+            if selectedPageId == nil, let pending = pendingJournalTitle {
+                selectedPageId = try graph.journalPage(date: pending)?.id
                 if selectedPageId != nil {
                     pendingJournalTitle = nil
                 }

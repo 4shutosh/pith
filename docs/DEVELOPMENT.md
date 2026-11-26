@@ -42,6 +42,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run --release -p pith-bench -- --check    # speed budgets
+(cd apps/macos && PITH_PERF=1 swift test -c release --filter PerformanceTests)    # app latencies on a 50k-block graph
 (cd apps/macos && swift test)                   # after ./scripts/build-swift.sh
 ```
 
