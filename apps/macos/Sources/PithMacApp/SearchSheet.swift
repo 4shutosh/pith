@@ -6,10 +6,11 @@ import SwiftUI
 struct QuickSearchSheet: View {
     @ObservedObject var controller: OutlinerController
     @Binding var isPresented: Bool
+    var onDismiss: () -> Void = {}
     let onCommand: (PaletteCommand) -> Void
     @State private var query: String = ""
     @State private var selected: Int = 0
-    @State private var keyMonitor: Any?
+    @FocusState private var inputFocused: Bool
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -49,6 +50,7 @@ struct QuickSearchSheet: View {
                     .textFieldStyle(.plain)
                     .font(Typography.ui(17))
                     .foregroundColor(Theme.textStrong)
+                    .focused($inputFocused)
                     .onChange(of: query) {
                         controller.runSearch($0)
                         selected = 0
@@ -58,6 +60,7 @@ struct QuickSearchSheet: View {
                     Text("\(controller.searchHits.count) results")
                         .font(Typography.ui(12))
                         .foregroundColor(Theme.textTertiary)
+                        .contentTransition(.numericText())
                 }
             }
             .padding(.horizontal, 18)
@@ -113,30 +116,27 @@ struct QuickSearchSheet: View {
         }
         .frame(width: 680, height: 500)
         .background(Theme.elevated)
-        .onAppear(perform: installKeyMonitor)
-        .onDisappear(perform: removeKeyMonitor)
+        .animation(Motion.fast, value: selected)
+        .onAppear {
+            DispatchQueue.main.async { inputFocused = true }
+        }
+        .keyScope(.overlay, whileEditingText: true) { handleKey($0) }
     }
 
-    private func installKeyMonitor() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            switch event.keyCode {
-            case 125:
-                moveSelection(1)
-                return nil
-            case 126:
-                moveSelection(-1)
-                return nil
-            default:
-                return event
-            }
+    private func handleKey(_ stroke: KeyStroke) -> Bool {
+        switch (stroke.key, stroke.modifiers) {
+        case (.escape, []):
+            onDismiss()
+        case (.returnKey, []):
+            openSelected()
+        case (.down, []):
+            moveSelection(1)
+        case (.up, []):
+            moveSelection(-1)
+        default:
+            return false
         }
-    }
-
-    private func removeKeyMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-        }
-        keyMonitor = nil
+        return true
     }
 
     private func moveSelection(_ delta: Int) {

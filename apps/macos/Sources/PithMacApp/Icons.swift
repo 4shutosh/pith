@@ -83,17 +83,11 @@ struct ChevronIcon: View {
     let expanded: Bool
 
     var body: some View {
-        Canvas { context, size in
+        Canvas { context, _ in
             var path = Path()
-            if expanded {
-                path.move(to: CGPoint(x: 2, y: 3.5))
-                path.addLine(to: CGPoint(x: 5, y: 6.5))
-                path.addLine(to: CGPoint(x: 8, y: 3.5))
-            } else {
-                path.move(to: CGPoint(x: 3.5, y: 2))
-                path.addLine(to: CGPoint(x: 6.5, y: 5))
-                path.addLine(to: CGPoint(x: 3.5, y: 8))
-            }
+            path.move(to: CGPoint(x: 3.5, y: 2))
+            path.addLine(to: CGPoint(x: 6.5, y: 5))
+            path.addLine(to: CGPoint(x: 3.5, y: 8))
             context.stroke(
                 path,
                 with: .foreground,
@@ -101,6 +95,8 @@ struct ChevronIcon: View {
             )
         }
         .frame(width: 10, height: 10)
+        .rotationEffect(.degrees(expanded ? 90 : 0))
+        .animation(Motion.morph, value: expanded)
     }
 }
 
@@ -251,3 +247,34 @@ struct ClockIcon: View {
         .frame(width: 14, height: 14)
     }
 }
+
+struct CheckIcon: View {
+    var body: some View {
+        Canvas { context, _ in
+            var path = Path()
+            path.move(to: CGPoint(x: 3, y: 7.5))
+            path.addLine(to: CGPoint(x: 6, y: 10.5))
+            path.addLine(to: CGPoint(x: 11, y: 4))
+            context.stroke(path, with: .foreground, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
+struct ClearIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            context.fill(Path(ellipseIn: CGRect(origin: .zero, size: size)), with: .foreground)
+            var cross = Path()
+            let inset = size.width * 0.33
+            cross.move(to: CGPoint(x: inset, y: inset))
+            cross.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
+            cross.move(to: CGPoint(x: size.width - inset, y: inset))
+            cross.addLine(to: CGPoint(x: inset, y: size.height - inset))
+            context.blendMode = .destinationOut
+            context.stroke(cross, with: .color(.black), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+        }
+        .frame(width: 13, height: 13)
+    }
+}
+

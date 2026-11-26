@@ -15,8 +15,8 @@ struct PageListView: View {
     @State private var highlightedIndex: Int?
     @State private var renamingPageId: String?
     @State private var renameDraft: String = ""
-    @State private var keyMonitor: Any?
     @FocusState private var filterFocused: Bool
+    @Namespace private var tabNamespace
 
     private let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -114,8 +114,7 @@ struct PageListView: View {
         .onChange(of: query) { _ in highlightedIndex = nil }
         .onChange(of: tab) { _ in highlightedIndex = nil }
         .onChange(of: sort) { _ in highlightedIndex = nil }
-        .onAppear { installKeyMonitor() }
-        .onDisappear { removeKeyMonitor() }
+        .keyScope(.screen, whileEditingText: true) { handleKey($0) }
     }
 
     private var header: some View {
@@ -140,17 +139,29 @@ struct PageListView: View {
                     Button {
                         query = ""
                     } label: {
-                        Text("×")
-                            .font(Typography.ui(13))
+                        ClearIcon()
                             .foregroundColor(Theme.textTertiary)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .cursor(.pointingHand)
+                    .help("Clear filter (esc)")
+                } else if !filterFocused {
+                    Keycap(label: "/")
                 }
             }
             .padding(.horizontal, 9)
             .frame(width: 210, height: 27)
             .background(RoundedRectangle(cornerRadius: 6).fill(Theme.elevated))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.divider, lineWidth: 1))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(filterFocused ? Theme.accent.opacity(0.6) : Theme.elevatedBorder, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture { filterFocused = true }
+            .cursor(.iBeam)
+            .help("Filter pages (/)")
 
             Button {
                 showSearch = true
@@ -166,7 +177,7 @@ struct PageListView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Theme.selected))
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressButtonStyle())
             .cursor(.pointingHand)
             .help("Create or open page (⌘K)")
         }
@@ -179,42 +190,18 @@ struct PageListView: View {
                 FilterChip(
                     title: option.rawValue,
                     count: count,
-                    isSelected: tab == option
+                    isSelected: tab == option,
+                    namespace: tabNamespace
                 ) {
-                    tab = option
+                    withAnimation(Motion.morph) {
+                        tab = option
+                    }
                 }
             }
 
             Spacer()
 
-            Menu {
-                ForEach(PageDirectorySort.allCases, id: \.self) { option in
-                    Button {
-                        sort = option
-                    } label: {
-                        if sort == option {
-                            Text("✓ \(option.rawValue)")
-                        } else {
-                            Text(option.rawValue)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(sort.rawValue)
-                        .font(Typography.ui(12))
-                        .foregroundColor(Theme.textSecondary)
-                    ChevronIcon(expanded: true)
-                        .foregroundColor(Theme.textTertiary)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Theme.hover.opacity(0.6)))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .cursor(.pointingHand)
+            SortPicker(sort: $sort)
         }
     }
 
@@ -264,60 +251,56 @@ struct PageListView: View {
         let list = summaries
         if let index = highlightedIndex, list.indices.contains(index) {
             controller.selectPage(list[index].page.id)
+        } else if let first = list.first {
+            controller.selectPage(first.page.id)
         } else if offersCreate {
             controller.openPageByTitle(trimmedQuery)
         }
     }
 
-    private func installKeyMonitor() {
-        guard keyMonitor == nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            handleKey(event) ? nil : event
-        }
-    }
+    private func handleKey(_ stroke: KeyStroke) -> Bool {
+        guard renamingPageId == nil else { return false }
+        let list = summaries
 
-    private func removeKeyMonitor() {
-        if let monitor = keyMonitor {
-            NSEvent.removeMonitor(monitor)
-            keyMonitor = nil
-        }
-    }
-
-    private func handleKey(_ event: NSEvent) -> Bool {
-        guard NSApp.keyWindow?.attachedSheet == nil, renamingPageId == nil else { return false }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let arrowFlags = flags.subtracting([.numericPad, .function])
-        let key = event.charactersIgnoringModifiers
-
-        if key == "/", flags.isEmpty, !filterFocused {
+        switch (stroke.key, stroke.modifiers) {
+        case (.character("/"), []) where !filterFocused:
             filterFocused = true
-            return true
-        }
-        if event.keyCode == 53, filterFocused {
-            if !query.isEmpty {
-                query = ""
-            } else {
+        case (.escape, []) where filterFocused:
+            if query.isEmpty {
                 filterFocused = false
+            } else {
+                query = ""
             }
-            return true
-        }
-        let count = summaries.count
-        switch (event.keyCode, arrowFlags) {
-        case (126, []):
-            guard count > 0 else { return false }
-            highlightedIndex = max(0, (highlightedIndex ?? count) - 1)
-            return true
-        case (125, []):
-            guard count > 0 else { return false }
-            highlightedIndex = min(count - 1, (highlightedIndex ?? -1) + 1)
-            return true
-        case (36, []), (76, []):
-            guard !filterFocused else { return false }
+        case (.escape, []) where highlightedIndex != nil:
+            highlightedIndex = nil
+        case (.up, []) where !list.isEmpty:
+            highlightedIndex = max(0, (highlightedIndex ?? list.count) - 1)
+        case (.down, []) where !list.isEmpty:
+            highlightedIndex = min(list.count - 1, (highlightedIndex ?? -1) + 1)
+        case (.returnKey, []) where !filterFocused:
             openHighlightedOrCreate()
-            return true
+        default:
+            return handleRowKey(stroke, in: list)
+        }
+        return true
+    }
+
+    private func handleRowKey(_ stroke: KeyStroke, in list: [FfiPageSummary]) -> Bool {
+        guard !filterFocused, let index = highlightedIndex, list.indices.contains(index) else { return false }
+        let page = list[index].page
+        switch (stroke.key, stroke.modifiers) {
+        case (.character("s"), []):
+            controller.toggleFavorite(page.id)
+        case (.character("r"), []) where page.journalDay == nil:
+            renamingPageId = page.id
+            renameDraft = page.title
+        case (.backspace, .command) where page.journalDay == nil,
+             (.forwardDelete, .command) where page.journalDay == nil:
+            controller.requestDelete(page.id)
         default:
             return false
         }
+        return true
     }
 }
 
@@ -334,6 +317,7 @@ private struct PageDirectoryRow: View {
     let onCancelRename: () -> Void
     let onDelete: (() -> Void)?
     let onHover: (Bool) -> Void
+    @FocusState private var renameFocused: Bool
 
     private var page: FfiPage { summary.page }
 
@@ -344,8 +328,12 @@ private struct PageDirectoryRow: View {
                     .textFieldStyle(.plain)
                     .font(Typography.ui(TypeScale.listRow, .medium))
                     .foregroundColor(Theme.textStrong)
+                    .focused($renameFocused)
                     .onSubmit(onCommitRename)
                     .onExitCommand(perform: onCancelRename)
+                    .onAppear {
+                        DispatchQueue.main.async { renameFocused = true }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Button(action: onOpen) {
@@ -416,6 +404,7 @@ private struct PageDirectoryRow: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isHighlighted ? Theme.hover : Color.clear)
         )
+        .contentShape(Rectangle())
         .padding(.horizontal, -10)
         .onHover(perform: onHover)
         .contextMenu {
@@ -434,6 +423,7 @@ private struct FilterChip: View {
     let title: String
     let count: Int
     let isSelected: Bool
+    let namespace: Namespace.ID
     let action: () -> Void
     @State private var isHovered = false
 
@@ -446,17 +436,27 @@ private struct FilterChip: View {
                 Text("\(count)")
                     .font(Typography.ui(11).monospacedDigit())
                     .foregroundColor(Theme.textTertiary)
+                    .contentTransition(.numericText())
             }
             .padding(.horizontal, 9)
             .frame(height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
-            )
+            .background {
+                ZStack {
+                    if isHovered && !isSelected {
+                        RoundedRectangle(cornerRadius: 6).fill(Theme.hover)
+                    }
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Theme.selected)
+                            .matchedGeometryEffect(id: "pageFilterTab", in: namespace)
+                    }
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
     }
 }
@@ -482,6 +482,94 @@ private struct CreateInlineRow: View {
             .padding(.horizontal, 10)
             .frame(height: 31)
             .background(RoundedRectangle(cornerRadius: 6).fill(isHovered ? Theme.hover : Theme.elevated))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .cursor(.pointingHand)
+        .onHover { isHovered = $0 }
+    }
+}
+
+private struct Keycap: View {
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(Typography.ui(TypeScale.label, .medium))
+            .foregroundColor(Theme.textTertiary)
+            .frame(minWidth: 16, minHeight: 16)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.elevatedBorder, lineWidth: 1))
+    }
+}
+
+private struct SortPicker: View {
+    @Binding var sort: PageDirectorySort
+    @State private var isOpen = false
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            isOpen.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Text("Sort")
+                    .foregroundColor(Theme.textTertiary)
+                Text(sort.rawValue)
+                    .fontWeight(.medium)
+                    .foregroundColor(Theme.textPrimary)
+                ChevronIcon(expanded: true)
+                    .foregroundColor(Theme.textTertiary)
+            }
+            .font(Typography.ui(TypeScale.meta))
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isOpen || isHovered ? Theme.hover : Theme.elevated)
+            )
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.elevatedBorder, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .cursor(.pointingHand)
+        .onHover { isHovered = $0 }
+        .help("Change sort order")
+        .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(PageDirectorySort.allCases, id: \.self) { option in
+                    SortOptionRow(title: option.rawValue, isSelected: option == sort) {
+                        sort = option
+                        isOpen = false
+                    }
+                }
+            }
+            .padding(5)
+            .frame(width: 180)
+            .background(Theme.elevated)
+        }
+    }
+}
+
+private struct SortOptionRow: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                CheckIcon()
+                    .foregroundColor(Theme.accent)
+                    .opacity(isSelected ? 1 : 0)
+                Text(title)
+                    .font(Typography.ui(TypeScale.ui, isSelected ? .medium : .regular))
+                    .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textPrimary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 6).fill(isHovered ? Theme.hover : Color.clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -7,7 +7,6 @@ struct OutlinerView: View {
     @ObservedObject var controller: OutlinerController
     let contentLeading: CGFloat
     let contentWidth: CGFloat
-    @State private var keyMonitor: Any?
     @State private var isRenaming = false
     @State private var renameDraft = ""
     @FocusState private var titleFieldFocused: Bool
@@ -32,8 +31,7 @@ struct OutlinerView: View {
                 }
             }
         }
-        .onAppear { installKeyMonitor() }
-        .onDisappear { removeKeyMonitor() }
+        .keyScope(.screen) { handleKey($0) }
         .environment(\.openURL, OpenURLAction { url in
             if let pageId = InlineFormatter.pageId(from: url) {
                 controller.openPage(id: pageId)
@@ -43,86 +41,60 @@ struct OutlinerView: View {
         })
     }
 
-    private func installKeyMonitor() {
-        guard keyMonitor == nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            handleSelectionKey(event) ? nil : event
+    private func handleKey(_ stroke: KeyStroke) -> Bool {
+        guard controller.hasBlockSelection else {
+            guard controller.focusedBlockId == nil else { return false }
+            switch (stroke.key, stroke.modifiers) {
+            case (.down, []), (.returnKey, []):
+                controller.ensureFirstBlockAndFocus()
+                return true
+            default:
+                return false
+            }
         }
-    }
 
-    private func removeKeyMonitor() {
-        if let monitor = keyMonitor {
-            NSEvent.removeMonitor(monitor)
-            keyMonitor = nil
-        }
-    }
-
-    private func handleSelectionKey(_ event: NSEvent) -> Bool {
-        guard controller.hasBlockSelection,
-              NSApp.keyWindow?.attachedSheet == nil,
-              !(NSApp.keyWindow?.firstResponder is NSTextView) else {
-            return false
-        }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let key = event.charactersIgnoringModifiers?.lowercased()
-        let arrowFlags = flags.subtracting([.numericPad, .function])
-
-        switch (event.keyCode, arrowFlags) {
-        case (53, []):
+        switch (stroke.key, stroke.modifiers) {
+        case (.escape, []):
             controller.clearSelection()
-            return true
-        case (36, []), (76, []):
+        case (.returnKey, []):
             controller.enterSelectedBlock()
-            return true
-        case (36, .command), (76, .command):
+        case (.returnKey, .command):
             controller.cycleSelectedTasks()
-            return true
-        case (51, []), (117, []):
+        case (.backspace, []), (.forwardDelete, []):
             controller.deleteSelectedBlocks()
-            return true
-        case (48, []):
+        case (.tab, []):
             controller.indentSelectedBlocks()
-            return true
-        case (48, .shift):
+        case (.tab, .shift):
             controller.outdentSelectedBlocks()
-            return true
-        case (126, []):
+        case (.up, []):
             controller.moveSelection(up: true)
-            return true
-        case (125, []):
+        case (.down, []):
             controller.moveSelection(up: false)
-            return true
-        case (126, .shift):
+        case (.up, .shift):
             controller.extendSelection(up: true)
-            return true
-        case (125, .shift):
+        case (.down, .shift):
             controller.extendSelection(up: false)
-            return true
-        case (126, .option):
+        case (.up, .option):
             controller.moveSelectedBlocks(up: true)
-            return true
-        case (125, .option):
+        case (.down, .option):
             controller.moveSelectedBlocks(up: false)
-            return true
-        case (_, .command) where key == "c":
-            if let markdown = controller.selectedBlocksMarkdown() {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(markdown, forType: .string)
-            }
-            return true
-        case (_, .command) where key == "x":
-            if let markdown = controller.selectedBlocksMarkdown() {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(markdown, forType: .string)
-            }
+        case (.character("c"), .command):
+            copySelectedBlocks()
+        case (.character("x"), .command):
+            copySelectedBlocks()
             controller.deleteSelectedBlocks()
-            return true
-        case (_, .command) where key == "a":
+        case (.character("a"), .command):
             controller.selectAllBlocks()
-            return true
         default:
             return false
         }
+        return true
+    }
+
+    private func copySelectedBlocks() {
+        guard let markdown = controller.selectedBlocksMarkdown() else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
     }
 
     private var content: some View {
@@ -375,8 +347,10 @@ private struct OutlineRow: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Theme.selected)
                     .padding(.horizontal, -6)
+                    .transition(.opacity)
             }
         }
+        .animation(Motion.fast, value: isSelected)
         .background(alignment: .topLeading) { guides }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
@@ -414,6 +388,7 @@ private struct OutlineRow: View {
                     .frame(width: 14, height: BlockStyle.lineHeight)
                     .contentShape(Rectangle())
                     .opacity(isHovered ? 1 : 0)
+                    .animation(Motion.fast, value: isHovered)
             }
             .buttonStyle(.plain)
             .cursor(.pointingHand)
@@ -433,26 +408,27 @@ private struct OutlineRow: View {
                     .frame(width: 18, height: BlockStyle.lineHeight)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressButtonStyle(scale: 0.88))
             .cursor(.pointingHand)
         } else {
             Button {
                 controller.zoom(into: row.id)
             } label: {
                 ZStack {
-                    if row.hasChildren && row.collapsed {
-                        Circle()
-                            .fill(Theme.bullet.opacity(0.35))
-                            .frame(width: 14, height: 14)
-                    }
+                    Circle()
+                        .fill(Theme.bullet.opacity(row.hasChildren && row.collapsed ? 0.35 : (isHovered ? 0.18 : 0)))
+                        .frame(width: 14, height: 14)
+                        .scaleEffect((row.hasChildren && row.collapsed) || isHovered ? 1 : 0.4)
                     Circle()
                         .fill(isHovered ? Theme.textSecondary : Theme.bullet)
                         .frame(width: 5, height: 5)
                 }
+                .animation(Motion.morph, value: row.collapsed)
+                .animation(Motion.hover, value: isHovered)
                 .frame(width: 18, height: BlockStyle.lineHeight)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressButtonStyle(scale: 0.90))
             .cursor(.pointingHand)
             .accessibilityLabel(row.hasChildren && row.collapsed ? "Zoom into collapsed block" : "Zoom into block")
         }
@@ -465,6 +441,8 @@ struct StatusIcon: View {
     var body: some View {
         TaskMark(status: status)
             .foregroundColor(color)
+            .scaleEffect(status == .done ? 1.04 : 1.0)
+            .animation(Motion.pop, value: status)
             .accessibilityLabel(label)
     }
 
@@ -484,54 +462,6 @@ struct StatusIcon: View {
         case .done: return "Done"
         case .canceled: return "Canceled"
         }
-    }
-}
-
-private struct LinkedReferences: View {
-    @ObservedObject var controller: OutlinerController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Rectangle().fill(Theme.divider).frame(height: 1)
-            Text("Linked references · \(controller.backlinks.count)")
-                .font(Typography.ui(12, .medium))
-                .foregroundColor(Theme.textTertiary)
-                .padding(.top, 10)
-            ForEach(controller.backlinks, id: \.blockId) { backlink in
-                BacklinkCard(backlink: backlink) {
-                    controller.selectPage(backlink.pageId)
-                    controller.focusBlock(backlink.blockId)
-                }
-            }
-        }
-    }
-}
-
-private struct BacklinkCard: View {
-    let backlink: FfiBacklink
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(backlink.pageTitle)
-                    .font(Typography.ui(12, .medium))
-                    .foregroundColor(Theme.textSecondary)
-                Text(InlineFormatter.format(backlink.spans))
-                    .font(Typography.ui(14))
-                    .foregroundColor(Theme.textBody)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(RoundedRectangle(cornerRadius: 8).fill(isHovered ? Theme.hover : Theme.elevated))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.divider, lineWidth: 1))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .cursor(.pointingHand)
-        .onHover { isHovered = $0 }
     }
 }
 
@@ -589,6 +519,7 @@ private struct TrailButton: View {
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
     }
 }

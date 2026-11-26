@@ -69,6 +69,7 @@ public enum Theme {
     public static let nsBracket = nsBullet
     public static let nsCaret = nsAccent
     public static let nsSelection = adaptive(dark: 0xE0A463, light: 0xD9964A, alpha: 0.24)
+    public static let nsShadow = adaptive(dark: 0x000000, light: 0x1B1916, alpha: 0.30)
     public static let nsClosedText = nsTextTertiary
     public static let nsClosedStrike = nsBullet
 
@@ -79,6 +80,7 @@ public enum Theme {
     public static let selected = Color(nsColor: nsSelected)
     public static let elevated = Color(nsColor: nsElevated)
     public static let elevatedBorder = Color(nsColor: nsElevatedBorder)
+    public static let shadow = Color(nsColor: nsShadow)
     public static let rowSelected = Color(nsColor: nsRowSelected)
     public static let guide = Color(nsColor: nsGuide)
     public static let codeBg = Color(nsColor: nsCodeBg)

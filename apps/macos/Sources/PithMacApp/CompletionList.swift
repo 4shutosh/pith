@@ -4,6 +4,7 @@ import SwiftUI
 struct CompletionList: View {
     let state: CompletionState
     let onPick: (Int) -> Void
+    @Namespace private var highlightNamespace
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -30,10 +31,13 @@ struct CompletionList: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(index == state.selected ? Theme.selected : Color.clear)
-                    )
+                    .background {
+                        if index == state.selected {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Theme.selected)
+                                .matchedGeometryEffect(id: "completionHighlight", in: highlightNamespace)
+                        }
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -41,6 +45,7 @@ struct CompletionList: View {
                 .focusable(false)
             }
         }
+        .animation(Motion.fast, value: state.selected)
         .padding(5)
         .frame(width: 300)
         .background(Theme.elevated)

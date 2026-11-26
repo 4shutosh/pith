@@ -5,6 +5,7 @@ import SwiftUI
 struct Sidebar: View {
     @ObservedObject var controller: OutlinerController
     @Binding var showSearch: Bool
+    @Namespace private var selectionNamespace
 
     private var destination: SidebarDestination? {
         controller.sidebarDestination
@@ -12,16 +13,28 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SearchFieldButton { showSearch = true }
-                .padding(.bottom, 12)
+            SearchFieldButton {
+                withAnimation(Motion.pop) { showSearch = true }
+            }
+            .padding(.bottom, 12)
 
             VStack(spacing: 1) {
-                SidebarNavItem(title: "Journals", shortcut: "⌘J", isSelected: destination == .journals) {
+                SidebarNavItem(
+                    title: "Journals",
+                    shortcut: "⌘J",
+                    isSelected: destination == .journals,
+                    selectionNamespace: selectionNamespace
+                ) {
                     TodayIcon()
                 } action: {
                     controller.openTodayJournal()
                 }
-                SidebarNavItem(title: "All pages", shortcut: "⇧⌘P", isSelected: destination == .allPages) {
+                SidebarNavItem(
+                    title: "All pages",
+                    shortcut: "⇧⌘P",
+                    isSelected: destination == .allPages,
+                    selectionNamespace: selectionNamespace
+                ) {
                     PagesIcon()
                 } action: {
                     controller.showAllPages()
@@ -41,6 +54,7 @@ struct Sidebar: View {
                     ScrollView(showsIndicators: false) { pageList(controller.favoritePages) }
                 }
                 .layoutPriority(1)
+                .animation(Motion.morph, value: controller.favoritePages.map(\.id))
             }
 
             if !controller.recentPages.isEmpty {
@@ -55,6 +69,7 @@ struct Sidebar: View {
         }
         .padding(.top, 44)
         .padding(.horizontal, SidebarMetrics.outerInset)
+        .animation(Motion.morph, value: destination)
     }
 
     private func pageList(_ pages: [FfiPage]) -> some View {
@@ -69,6 +84,7 @@ struct Sidebar: View {
         SidebarPageItem(
             page: page,
             isSelected: destination == .page(page.id),
+            selectionNamespace: selectionNamespace,
             onOpen: { controller.selectPage(page.id) },
             onToggleFavorite: { controller.toggleFavorite(page.id) },
             onDelete: page.journalDay == nil ? { controller.requestDelete(page.id) } : nil
@@ -111,8 +127,9 @@ private struct SearchFieldButton: View {
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.divider, lineWidth: 1))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressButtonStyle(scale: 0.98))
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
         .help("Search or create page (⌘K)")
         .accessibilityLabel("Search")
@@ -145,6 +162,7 @@ private struct SidebarNavItem<Icon: View>: View {
     let title: String
     var shortcut: String? = nil
     let isSelected: Bool
+    let selectionNamespace: Namespace.ID
     @ViewBuilder let icon: () -> Icon
     let action: () -> Void
     @State private var isHovered = false
@@ -164,15 +182,17 @@ private struct SidebarNavItem<Icon: View>: View {
                     Text(shortcut)
                         .font(Typography.ui(11))
                         .foregroundColor(Theme.textTertiary)
+                        .transition(.opacity)
                 }
             }
             .padding(.horizontal, SidebarMetrics.rowInset)
             .frame(height: SidebarMetrics.rowHeight)
-            .background(RowBackground(isSelected: isSelected, isHovered: isHovered))
+            .background(RowBackground(isSelected: isSelected, isHovered: isHovered, namespace: selectionNamespace))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
     }
 }
@@ -180,6 +200,7 @@ private struct SidebarNavItem<Icon: View>: View {
 private struct SidebarPageItem: View {
     let page: FfiPage
     let isSelected: Bool
+    let selectionNamespace: Namespace.ID
     let onOpen: () -> Void
     let onToggleFavorite: () -> Void
     let onDelete: (() -> Void)?
@@ -197,11 +218,12 @@ private struct SidebarPageItem: View {
             }
             .padding(.horizontal, SidebarMetrics.rowInset)
             .frame(height: SidebarMetrics.rowHeight)
-            .background(RowBackground(isSelected: isSelected, isHovered: isHovered))
+            .background(RowBackground(isSelected: isSelected, isHovered: isHovered, namespace: selectionNamespace))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
         .contextMenu {
             Button(page.favorite ? "Remove from Favorites" : "Add to Favorites", action: onToggleFavorite)
@@ -216,10 +238,21 @@ private struct SidebarPageItem: View {
 private struct RowBackground: View {
     let isSelected: Bool
     let isHovered: Bool
+    let namespace: Namespace.ID
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 6)
-            .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
+        ZStack {
+            if isHovered && !isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Theme.hover)
+                    .transition(.opacity)
+            }
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Theme.selected)
+                    .matchedGeometryEffect(id: "sidebarActive", in: namespace)
+            }
+        }
     }
 }
 
@@ -239,8 +272,9 @@ struct SidebarToggleButton: View {
                 )
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressButtonStyle())
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .accessibilityLabel(label)
         .onHover { isHovered = $0 }
     }
@@ -253,15 +287,20 @@ struct ThemeToggleButton: View {
 
     var body: some View {
         Button {
-            mode = ThemeMode.toggled(currentlyDark: colorScheme == .dark)
+            withAnimation(Motion.morph) {
+                mode = ThemeMode.toggled(currentlyDark: colorScheme == .dark)
+            }
         } label: {
-            Group {
+            ZStack {
                 if colorScheme == .dark {
                     SunIcon()
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
                 } else {
                     MoonIcon()
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
                 }
             }
+            .rotationEffect(.degrees(colorScheme == .dark ? 0 : -20))
             .foregroundColor(isHovered ? Theme.textPrimary : Theme.textTertiary)
             .frame(width: 28, height: 28)
             .background(
@@ -270,8 +309,10 @@ struct ThemeToggleButton: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressButtonStyle())
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
+        .animation(Motion.morph, value: colorScheme)
         .help(colorScheme == .dark ? "Switch to light (⇧⌘L)" : "Switch to dark (⇧⌘L)")
         .accessibilityLabel(colorScheme == .dark ? "Switch to light appearance" : "Switch to dark appearance")
         .onHover { isHovered = $0 }

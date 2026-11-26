@@ -9,6 +9,8 @@ struct ContentView: View {
     @Binding var showSearch: Bool
     @Binding var showSidebar: Bool
     @Binding var themeMode: ThemeMode
+    @StateObject private var keyRouter = KeyRouter()
+    @State private var focusBeforePalette: String?
     private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     private static let sidebarWidth = EditorLayout.sidebarWidth
@@ -57,7 +59,7 @@ struct ContentView: View {
 
                 HStack(spacing: 2) {
                     SidebarToggleButton(label: showSidebar ? "Hide sidebar" : "Show sidebar") {
-                        withAnimation(.easeOut(duration: 0.18)) {
+                        withAnimation(Motion.drawer) {
                             showSidebar.toggle()
                         }
                     }
@@ -65,13 +67,42 @@ struct ContentView: View {
                 }
                 .padding(.leading, Self.titleBarControlsLeading)
                 .padding(.top, Self.trafficLightCenterY - 14)
+
+                if showSearch {
+                    ZStack(alignment: .top) {
+                        Theme.sidebar.opacity(0.55)
+                            .ignoresSafeArea()
+                            .onTapGesture { dismissPalette(restoreFocus: true) }
+                            .transition(.opacity)
+
+                        QuickSearchSheet(
+                            controller: controller,
+                            isPresented: $showSearch,
+                            onDismiss: { dismissPalette(restoreFocus: true) },
+                            onCommand: { command in
+                                focusBeforePalette = nil
+                                CommandRunner.run(command, controller: controller, showSidebar: $showSidebar, themeMode: $themeMode)
+                            }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.elevatedBorder, lineWidth: 1))
+                        .shadow(color: Theme.shadow, radius: 28, y: 12)
+                        .padding(.top, 84)
+                        .transition(.scale(scale: 0.97).combined(with: .opacity))
+                    }
+                    .zIndex(10)
+                }
             }
+            .animation(Motion.pop, value: showSearch)
         }
+        .environmentObject(keyRouter)
         .background(Theme.canvas)
         .ignoresSafeArea()
-        .sheet(isPresented: $showSearch) {
-            QuickSearchSheet(controller: controller, isPresented: $showSearch) { command in
-                CommandRunner.run(command, controller: controller, showSidebar: $showSidebar, themeMode: $themeMode)
+        .onAppear { keyRouter.startMonitoring() }
+        .onDisappear { keyRouter.stopMonitoring() }
+        .onChange(of: showSearch) { open in
+            if open {
+                focusBeforePalette = controller.focusedBlockId
             }
         }
         .onReceive(timer) { _ in
@@ -102,6 +133,19 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             controller.flushDraft()
+        }
+    }
+
+    private func dismissPalette(restoreFocus: Bool) {
+        let previous = focusBeforePalette
+        focusBeforePalette = nil
+        withAnimation(Motion.fast) {
+            showSearch = false
+        }
+        if restoreFocus, let previous {
+            DispatchQueue.main.async {
+                controller.focusBlock(previous)
+            }
         }
     }
 }
@@ -169,7 +213,9 @@ struct PithMacApp: App {
                     .disabled(!controller.isAvailable(.deletePage))
             }
             CommandMenu("Navigate") {
-                Button("Search") { showSearch = true }
+                Button("Search") {
+                    withAnimation(Motion.pop) { showSearch.toggle() }
+                }
                     .keyboardShortcut("k", modifiers: .command)
                 Button("Journals") { controller.openTodayJournal() }
                     .keyboardShortcut("j", modifiers: .command)
@@ -190,7 +236,7 @@ struct PithMacApp: App {
                     .disabled(!controller.isAvailable(.nextDay))
                 Divider()
                 Button(showSidebar ? "Hide Sidebar" : "Show Sidebar") {
-                    withAnimation(.easeOut(duration: 0.16)) {
+                    withAnimation(Motion.drawer) {
                         showSidebar.toggle()
                     }
                 }

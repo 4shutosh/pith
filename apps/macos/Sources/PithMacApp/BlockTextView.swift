@@ -22,26 +22,25 @@ final class PithTextView: NSTextView {
             super.keyDown(with: event)
             return
         }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let key = event.charactersIgnoringModifiers?.lowercased()
-        switch (event.keyCode, flags) {
-        case (36, .command), (76, .command):
+        let stroke = KeyStroke(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers, modifiers: event.modifierFlags)
+        switch (stroke.key, stroke.modifiers) {
+        case (.returnKey, .command):
             onCommandReturn?(caret)
-        case (126, [.option]), (126, [.option, .numericPad, .function]):
+        case (.up, .option):
             onMoveBlock?(true, caret)
-        case (125, [.option]), (125, [.option, .numericPad, .function]):
+        case (.down, .option):
             onMoveBlock?(false, caret)
-        case (_, .command) where key == "b":
+        case (.character("b"), .command):
             applyInlineFormat(.bold)
-        case (_, .command) where key == "i":
+        case (.character("i"), .command):
             applyInlineFormat(.italic)
-        case (_, [.command, .shift]) where key == "x":
+        case (.character("x"), [.command, .shift]):
             applyInlineFormat(.strike)
-        case (_, [.command, .shift]) where key == "h":
+        case (.character("h"), [.command, .shift]):
             applyInlineFormat(.highlight)
-        case (_, .command) where key == ".":
+        case (.character("."), .command):
             onToggleCollapse?(caret)
-        case (_, [.command, .shift]) where key == "c":
+        case (.character("c"), [.command, .shift]):
             onCopyMarkdown?()
         default:
             super.keyDown(with: event)
