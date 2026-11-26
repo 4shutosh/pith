@@ -323,4 +323,76 @@ final class OutlinerTests: XCTestCase {
         XCTAssertEqual(controller.rows[0].renderedContent, "TODO Make things work")
         XCTAssertEqual(BlockPresentation.runs(controller.rows[0].spans).status, .todo)
     }
+
+    func testMultiBlockSelectionSupportsBulkOpsAndSingleStepUndo() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+        try type(controller, "A")
+        controller.handleReturn(at: 1)
+        try type(controller, "B")
+        controller.handleReturn(at: 1)
+        try type(controller, "C")
+
+        let a = controller.rows[0].id
+        let b = controller.rows[1].id
+        let c = controller.rows[2].id
+
+        controller.focusBlock(b)
+        controller.selectBlockFromFocus()
+        XCTAssertNil(controller.focusedBlockId)
+        XCTAssertEqual(controller.selectedBlockIds, [b])
+
+        controller.extendSelection(up: false)
+        XCTAssertEqual(controller.selectedBlockIds, [b, c])
+
+        controller.indentSelectedBlocks()
+        XCTAssertEqual(controller.rows.map(\.depth), [0, 1, 1])
+        XCTAssertEqual(controller.selectedBlockIds, [b, c])
+
+        controller.outdentSelectedBlocks()
+        XCTAssertEqual(controller.rows.map(\.depth), [0, 0, 0])
+
+        controller.moveSelectedBlocks(up: true)
+        XCTAssertEqual(controller.rows.map(\.renderedContent), ["B", "C", "A"])
+
+        controller.cycleSelectedTasks()
+        XCTAssertEqual(controller.rows.map(\.renderedContent), ["TODO B", "TODO C", "A"])
+        XCTAssertEqual(controller.selectedBlocksMarkdown(), "- TODO B\n- TODO C")
+
+        controller.deleteSelectedBlocks()
+        XCTAssertEqual(controller.rows.map(\.renderedContent), ["A"])
+        XCTAssertEqual(controller.selectedBlockIds, [a])
+
+        controller.undo()
+        XCTAssertEqual(controller.rows.map(\.renderedContent), ["TODO B", "TODO C", "A"])
+    }
+
+    func testTypingInsideBracketsDoesNotCreateIntermediatePages() async throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try OutlinerController(graph: graph)
+        controller.debounceNanoseconds = 0
+        controller.ensureFirstBlockAndFocus()
+        let id = try XCTUnwrap(controller.focusedBlockId)
+
+        controller.updateDraft(blockId: id, text: "[[R]]", isComposing: false, caret: 3)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        controller.updateDraft(blockId: id, text: "[[Ro]]", isComposing: false, caret: 4)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        controller.updateDraft(blockId: id, text: "[[Road]]", isComposing: false, caret: 6)
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        let titlesWhileTyping = try graph.listPages().map(\.title)
+        XCTAssertFalse(titlesWhileTyping.contains("R"))
+        XCTAssertFalse(titlesWhileTyping.contains("Ro"))
+        XCTAssertFalse(titlesWhileTyping.contains("Road"))
+
+        controller.updateCaret(blockId: id, caret: 8)
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        let titlesAfterLeaving = try graph.listPages().map(\.title)
+        XCTAssertFalse(titlesAfterLeaving.contains("R"))
+        XCTAssertFalse(titlesAfterLeaving.contains("Ro"))
+        XCTAssertTrue(titlesAfterLeaving.contains("Road"))
+    }
 }

@@ -7,6 +7,7 @@ struct OutlinerView: View {
     @ObservedObject var controller: OutlinerController
     let contentLeading: CGFloat
     let contentWidth: CGFloat
+    @State private var keyMonitor: Any?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +29,8 @@ struct OutlinerView: View {
                 }
             }
         }
+        .onAppear { installKeyMonitor() }
+        .onDisappear { removeKeyMonitor() }
         .environment(\.openURL, OpenURLAction { url in
             if let pageId = InlineFormatter.pageId(from: url) {
                 controller.openPage(id: pageId)
@@ -35,6 +38,88 @@ struct OutlinerView: View {
             }
             return .systemAction
         })
+    }
+
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handleSelectionKey(event) ? nil : event
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    private func handleSelectionKey(_ event: NSEvent) -> Bool {
+        guard controller.hasBlockSelection,
+              NSApp.keyWindow?.attachedSheet == nil,
+              !(NSApp.keyWindow?.firstResponder is NSTextView) else {
+            return false
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        let arrowFlags = flags.subtracting([.numericPad, .function])
+
+        switch (event.keyCode, arrowFlags) {
+        case (53, []):
+            controller.clearSelection()
+            return true
+        case (36, []), (76, []):
+            controller.enterSelectedBlock()
+            return true
+        case (36, .command), (76, .command):
+            controller.cycleSelectedTasks()
+            return true
+        case (51, []), (117, []):
+            controller.deleteSelectedBlocks()
+            return true
+        case (48, []):
+            controller.indentSelectedBlocks()
+            return true
+        case (48, .shift):
+            controller.outdentSelectedBlocks()
+            return true
+        case (126, []):
+            controller.moveSelection(up: true)
+            return true
+        case (125, []):
+            controller.moveSelection(up: false)
+            return true
+        case (126, .shift):
+            controller.extendSelection(up: true)
+            return true
+        case (125, .shift):
+            controller.extendSelection(up: false)
+            return true
+        case (126, .option):
+            controller.moveSelectedBlocks(up: true)
+            return true
+        case (125, .option):
+            controller.moveSelectedBlocks(up: false)
+            return true
+        case (_, .command) where key == "c":
+            if let markdown = controller.selectedBlocksMarkdown() {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(markdown, forType: .string)
+            }
+            return true
+        case (_, .command) where key == "x":
+            if let markdown = controller.selectedBlocksMarkdown() {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(markdown, forType: .string)
+            }
+            controller.deleteSelectedBlocks()
+            return true
+        case (_, .command) where key == "a":
+            controller.selectAllBlocks()
+            return true
+        default:
+            return false
+        }
     }
 
     private var content: some View {
@@ -91,6 +176,7 @@ struct OutlinerView: View {
                         OutlineRow(
                             row: row,
                             isFocused: isFocused,
+                            isSelected: controller.selectedBlockIds.contains(row.id),
                             cursorOffset: isFocused ? controller.requestedCursorOffset : nil,
                             cursorSeq: isFocused ? controller.cursorRequestSeq : 0,
                             completion: isFocused ? controller.completion : nil,
@@ -124,6 +210,7 @@ struct OutlinerView: View {
 private struct OutlineRow: View {
     let row: FfiFlatBlockRow
     let isFocused: Bool
+    let isSelected: Bool
     let cursorOffset: Int?
     let cursorSeq: UInt64
     let completion: CompletionState?
@@ -150,9 +237,13 @@ private struct OutlineRow: View {
                 requestedCursorOffset: cursorOffset,
                 cursorRequestSeq: cursorSeq,
                 onActivate: { controller.focusBlock(row.id, cursorOffset: $0) },
+                onShiftClick: { controller.shiftClickBlock(row.id) },
                 onOpenPage: { controller.openPage(id: $0) },
                 onTextChange: { text, composing, caret in
                     controller.updateDraft(blockId: row.id, text: text, isComposing: composing, caret: caret)
+                },
+                onCaretChange: { caret in
+                    controller.updateCaret(blockId: row.id, caret: caret)
                 },
                 onReturn: { controller.handleReturn(at: $0) },
                 onCycleTask: { controller.cycleTask(caret: $0) },
@@ -161,7 +252,9 @@ private struct OutlineRow: View {
                 onShiftTab: { controller.outdentFocusedBlock() },
                 onMoveUp: { controller.moveFocusUp(column: $0) },
                 onMoveDown: { controller.moveFocusDown(column: $0) },
-                onEscape: { controller.blurFocus() },
+                onExtendSelectionUp: { controller.extendSelection(up: true) },
+                onExtendSelectionDown: { controller.extendSelection(up: false) },
+                onEscape: { controller.selectBlockFromFocus() },
                 completion: completion,
                 onCompletionMove: { controller.moveCompletion($0) },
                 onCompletionAccept: { controller.acceptCompletion(at: $0) },
@@ -179,6 +272,13 @@ private struct OutlineRow: View {
         }
         .padding(.leading, CGFloat(row.depth) * Self.indent)
         .padding(.vertical, Self.rowPadding)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Theme.selected)
+                    .padding(.horizontal, -6)
+            }
+        }
         .background(alignment: .topLeading) { guides }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }

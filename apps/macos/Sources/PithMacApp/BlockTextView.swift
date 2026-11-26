@@ -5,6 +5,7 @@ import SwiftUI
 
 final class PithTextView: NSTextView {
     var onActivate: ((Int) -> Void)?
+    var onShiftClick: (() -> Void)?
     var onOpenPage: ((String) -> Void)?
     var onCommandReturn: ((Int) -> Void)?
     var onMoveBlock: ((Bool, Int) -> Void)?
@@ -70,6 +71,10 @@ final class PithTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.shift), !isEditable {
+            onShiftClick?()
+            return
+        }
         guard !isEditable else {
             super.mouseDown(with: event)
             return
@@ -158,8 +163,10 @@ struct BlockTextView: NSViewRepresentable {
     let requestedCursorOffset: Int?
     let cursorRequestSeq: UInt64
     let onActivate: (Int) -> Void
+    var onShiftClick: () -> Void = {}
     let onOpenPage: (String) -> Void
     let onTextChange: (String, Bool, Int) -> Void
+    var onCaretChange: (Int) -> Void = { _ in }
     let onReturn: (Int) -> Void
     let onCycleTask: (Int) -> Void
     let onBackspaceAtStart: () -> Void
@@ -167,6 +174,8 @@ struct BlockTextView: NSViewRepresentable {
     let onShiftTab: () -> Void
     let onMoveUp: (Int) -> Void
     let onMoveDown: (Int) -> Void
+    var onExtendSelectionUp: () -> Void = {}
+    var onExtendSelectionDown: () -> Void = {}
     let onEscape: () -> Void
     var completion: CompletionState? = nil
     var onCompletionMove: (Int) -> Void = { _ in }
@@ -222,6 +231,7 @@ struct BlockTextView: NSViewRepresentable {
             let editText = runs.map(\.source).joined()
             onActivate(TextOffsets.scalar(fromUTF16: editUTF16, in: editText))
         }
+        textView.onShiftClick = onShiftClick
         textView.onOpenPage = onOpenPage
         textView.onCommandReturn = onCycleTask
         textView.onMoveBlock = onMoveBlock
@@ -329,6 +339,14 @@ struct BlockTextView: NSViewRepresentable {
             textView.setSelectedRange(selection)
         }
 
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView,
+                  textView.isEditable,
+                  !textView.hasMarkedText() else { return }
+            let caret = TextOffsets.scalar(fromUTF16: textView.selectedRange().location, in: textView.string)
+            parent.onCaretChange(caret)
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView, textView.isEditable else { return }
             if pendingPairCheck, !textView.hasMarkedText() {
@@ -396,6 +414,14 @@ struct BlockTextView: NSViewRepresentable {
             case #selector(NSResponder.moveDown(_:)):
                 guard view.isCaretOnLastVisualLine() else { return false }
                 parent.onMoveDown(TextOffsets.column(ofScalar: caret, in: view.string))
+                return true
+            case #selector(NSResponder.moveUpAndModifySelection(_:)):
+                guard view.isCaretOnFirstVisualLine() else { return false }
+                parent.onExtendSelectionUp()
+                return true
+            case #selector(NSResponder.moveDownAndModifySelection(_:)):
+                guard view.isCaretOnLastVisualLine() else { return false }
+                parent.onExtendSelectionDown()
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
                 parent.onEscape()

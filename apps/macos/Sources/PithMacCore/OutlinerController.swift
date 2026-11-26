@@ -11,6 +11,7 @@ public final class OutlinerController: ObservableObject {
     @Published public var totalVisible: UInt64 = 0
     @Published public var backlinks: [FfiBacklink] = []
     @Published public var focusedBlockId: String?
+    @Published public var selectedBlockIds: Set<String> = []
     public var draftText: String = ""
     @Published public var requestedCursorOffset: Int?
     @Published public var cursorRequestSeq: UInt64 = 0
@@ -31,9 +32,12 @@ public final class OutlinerController: ObservableObject {
     private var draftBaseVersion: Int64 = 0
     private var draftBaseText: String = ""
     private var editPrefix: String = ""
+    private var selectionAnchorId: String?
+    private var selectionFocusId: String?
     private var undoGroup: String = newId()
     private var lastDataVersion: Int64 = 0
     private var isComposingIME: Bool = false
+    private var isEditingRef: Bool = false
     private var debounceTask: Task<Void, Never>?
     private var windowOffset: UInt64 = 0
     private let signposter = OSSignposter(subsystem: "app.pith", category: "editor")
@@ -94,6 +98,14 @@ public final class OutlinerController: ObservableObject {
             if let focused = focusedBlockId, !rows.contains(where: { $0.id == focused }) {
                 endEditing()
             }
+            if !selectedBlockIds.isEmpty {
+                let live = Set(rows.map(\.id))
+                selectedBlockIds.formIntersection(live)
+                if selectedBlockIds.isEmpty {
+                    selectionAnchorId = nil
+                    selectionFocusId = nil
+                }
+            }
             errorMessage = nil
         } catch {
             report(error)
@@ -101,6 +113,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func selectPage(_ pageId: String) {
+        clearSelection()
         leaveBlock()
         isShowingAllPages = false
         zoomedBlockId = nil
@@ -111,6 +124,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func openTodayJournal() {
+        clearSelection()
         leaveBlock()
         isShowingAllPages = false
         zoomedBlockId = nil
@@ -123,6 +137,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func showAllPages() {
+        clearSelection()
         leaveBlock()
         isShowingAllPages = true
         run { pages = try graph.listPages() }
@@ -153,6 +168,7 @@ public final class OutlinerController: ObservableObject {
     public func focusBlock(_ blockId: String, cursorOffset: Int? = nil) {
         let interval = signposter.beginInterval("focus")
         defer { signposter.endInterval("focus", interval) }
+        clearSelection()
         if focusedBlockId != blockId {
             leaveBlock()
             guard let row = rows.first(where: { $0.id == blockId }) else { return }
@@ -163,6 +179,161 @@ public final class OutlinerController: ObservableObject {
 
     public func blurFocus() {
         leaveBlock()
+    }
+
+    public var hasBlockSelection: Bool {
+        !selectedBlockIds.isEmpty
+    }
+
+    public func selectBlock(_ blockId: String) {
+        guard rows.contains(where: { $0.id == blockId }) else { return }
+        leaveBlock()
+        selectedBlockIds = [blockId]
+        selectionAnchorId = blockId
+        selectionFocusId = blockId
+    }
+
+    public func selectBlockFromFocus() {
+        guard let blockId = focusedBlockId else { return }
+        selectBlock(blockId)
+    }
+
+    public func clearSelection() {
+        guard !selectedBlockIds.isEmpty || selectionAnchorId != nil || selectionFocusId != nil else { return }
+        selectedBlockIds = []
+        selectionAnchorId = nil
+        selectionFocusId = nil
+    }
+
+    public func enterSelectedBlock() {
+        let target = selectionFocusId ?? selectionAnchorId ?? orderedSelectedBlockIds().first
+        guard let target else { return }
+        focusBlock(target)
+    }
+
+    public func selectAllBlocks() {
+        guard !rows.isEmpty else { return }
+        leaveBlock()
+        selectedBlockIds = Set(rows.map(\.id))
+        selectionAnchorId = rows.first?.id
+        selectionFocusId = rows.last?.id
+    }
+
+    public func moveSelection(up: Bool) {
+        guard !rows.isEmpty else { return }
+        let current = selectionFocusId ?? selectionAnchorId ?? orderedSelectedBlockIds().first
+        guard let current, let idx = rows.firstIndex(where: { $0.id == current }) else {
+            selectBlock(rows[0].id)
+            return
+        }
+        let nextIdx = max(0, min(rows.count - 1, idx + (up ? -1 : 1)))
+        selectBlock(rows[nextIdx].id)
+    }
+
+    public func extendSelection(up: Bool) {
+        guard !rows.isEmpty else { return }
+        let delta = up ? -1 : 1
+        if let focused = focusedBlockId, let idx = rows.firstIndex(where: { $0.id == focused }) {
+            leaveBlock()
+            let nextIdx = max(0, min(rows.count - 1, idx + delta))
+            selectRange(fromIndex: idx, toIndex: nextIdx)
+            return
+        }
+        guard let anchor = selectionAnchorId ?? orderedSelectedBlockIds().first,
+              let anchorIdx = rows.firstIndex(where: { $0.id == anchor }) else { return }
+        let focus = selectionFocusId ?? anchor
+        let focusIdx = rows.firstIndex(where: { $0.id == focus }) ?? anchorIdx
+        let nextIdx = max(0, min(rows.count - 1, focusIdx + delta))
+        selectRange(fromIndex: anchorIdx, toIndex: nextIdx)
+    }
+
+    public func shiftClickBlock(_ blockId: String) {
+        guard let targetIdx = rows.firstIndex(where: { $0.id == blockId }) else { return }
+        let anchorId = selectionAnchorId ?? focusedBlockId ?? blockId
+        let anchorIdx = rows.firstIndex(where: { $0.id == anchorId }) ?? targetIdx
+        leaveBlock()
+        selectRange(fromIndex: anchorIdx, toIndex: targetIdx)
+    }
+
+    public func orderedSelectedBlockIds() -> [String] {
+        rows.map(\.id).filter { selectedBlockIds.contains($0) }
+    }
+
+    public func selectedBlocksMarkdown() -> String? {
+        let ids = orderedSelectedBlockIds()
+        guard !ids.isEmpty else { return nil }
+        var markdown: String?
+        run { markdown = try graph.blocksMarkdown(blockIds: ids) }
+        return markdown
+    }
+
+    public func deleteSelectedBlocks() {
+        let ids = orderedSelectedBlockIds()
+        guard !ids.isEmpty else { return }
+        let firstIdx = rows.firstIndex(where: { selectedBlockIds.contains($0.id) })
+        let fallbackId: String? = firstIdx.flatMap { idx in
+            if idx > 0 { return rows[idx - 1].id }
+            return rows.first(where: { !selectedBlockIds.contains($0.id) })?.id
+        }
+        run {
+            _ = try graph.deleteBlocks(blockIds: ids, meta: meta("delete blocks"))
+            clearSelection()
+            reload()
+            if let fallbackId, rows.contains(where: { $0.id == fallbackId }) {
+                selectBlock(fallbackId)
+            }
+        }
+    }
+
+    public func indentSelectedBlocks() {
+        let ids = orderedSelectedBlockIds()
+        guard !ids.isEmpty else { return }
+        run {
+            if try graph.indentBlocks(blockIds: ids, meta: meta("indent blocks")) != nil {
+                reload()
+            }
+        }
+    }
+
+    public func outdentSelectedBlocks() {
+        let ids = orderedSelectedBlockIds()
+        guard !ids.isEmpty else { return }
+        run {
+            if try graph.outdentBlocks(blockIds: ids, meta: meta("outdent blocks")) != nil {
+                reload()
+            }
+        }
+    }
+
+    public func moveSelectedBlocks(up: Bool) {
+        let ids = orderedSelectedBlockIds()
+        guard !ids.isEmpty else { return }
+        run {
+            let result = up
+                ? try graph.moveBlocksUp(blockIds: ids, meta: meta("move blocks up"))
+                : try graph.moveBlocksDown(blockIds: ids, meta: meta("move blocks down"))
+            if result != nil {
+                reload()
+            }
+        }
+    }
+
+    public func cycleSelectedTasks() {
+        let ids = orderedSelectedBlockIds()
+        guard !ids.isEmpty else { return }
+        run {
+            if try graph.cycleTasks(blockIds: ids, meta: meta("cycle tasks")) != nil {
+                reload()
+            }
+        }
+    }
+
+    private func selectRange(fromIndex anchorIdx: Int, toIndex focusIdx: Int) {
+        let lower = min(anchorIdx, focusIdx)
+        let upper = max(anchorIdx, focusIdx)
+        selectedBlockIds = Set(rows[lower...upper].map(\.id))
+        selectionAnchorId = rows[anchorIdx].id
+        selectionFocusId = rows[focusIdx].id
     }
 
     public func ensureFirstBlockAndFocus() {
@@ -188,10 +359,32 @@ public final class OutlinerController: ObservableObject {
         draftText = text
         isComposingIME = isComposing
         if let caret, !isComposing {
-            updateCompletion(caret: caret)
+            let context = completionContext(text: draftText, caret: UInt32(caret))
+            isEditingRef = context != nil
+            updateCompletion(context: context)
+        } else {
+            isEditingRef = false
         }
         debounceTask?.cancel()
-        guard !isComposing else { return }
+        guard !isComposing, !isEditingRef else { return }
+        scheduleDebounceSave()
+    }
+
+    public func updateCaret(blockId: String, caret: Int) {
+        guard focusedBlockId == blockId, !isComposingIME else { return }
+        let context = completionContext(text: draftText, caret: UInt32(caret))
+        let wasEditingRef = isEditingRef
+        isEditingRef = context != nil
+        if context != completion?.context {
+            updateCompletion(context: context)
+        }
+        if wasEditingRef && !isEditingRef && isDirty {
+            scheduleDebounceSave()
+        }
+    }
+
+    private func scheduleDebounceSave() {
+        debounceTask?.cancel()
         let delay = debounceNanoseconds
         debounceTask = Task { [weak self] in
             if delay > 0 {
@@ -467,6 +660,7 @@ public final class OutlinerController: ObservableObject {
         guard state.items.indices.contains(chosen) else { return }
         let edit = applyCompletion(text: draftText, context: state.context, value: state.items[chosen].value)
         completion = nil
+        isEditingRef = false
         draftText = edit.text
         requestCursor(Int(edit.caret))
         flushDraft()
@@ -476,8 +670,8 @@ public final class OutlinerController: ObservableObject {
         completion = nil
     }
 
-    private func updateCompletion(caret: Int) {
-        guard let context = completionContext(text: draftText, caret: UInt32(caret)) else {
+    private func updateCompletion(context: FfiCompletionContext?) {
+        guard let context else {
             completion = nil
             return
         }
@@ -569,6 +763,7 @@ public final class OutlinerController: ObservableObject {
         debounceTask?.cancel()
         debounceTask = nil
         isComposingIME = false
+        isEditingRef = false
     }
 
     private func command(_ body: () throws -> FfiEditOutcome?) {

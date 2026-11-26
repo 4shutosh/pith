@@ -71,6 +71,12 @@ struct ContentView: View {
         .onReceive(timer) { _ in
             controller.pollExternalChanges()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+            controller.flushDraft()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            controller.flushDraft()
+        }
     }
 
     private func editorLayout(windowWidth: CGFloat, sidebarOpen: Bool) -> (leading: CGFloat, width: CGFloat) {
