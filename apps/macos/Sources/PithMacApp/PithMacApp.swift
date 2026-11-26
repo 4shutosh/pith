@@ -11,11 +11,13 @@ struct ContentView: View {
     @Binding var themeMode: ThemeMode
     private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
-    private static let sidebarWidth: CGFloat = 216
+    private static let sidebarWidth = EditorLayout.sidebarWidth
+    private static let trafficLightCenterY: CGFloat = 16
+    private static let titleBarControlsLeading: CGFloat = 78
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = editorLayout(windowWidth: proxy.size.width, sidebarOpen: showSidebar)
+            let layout = EditorLayout.compute(windowWidth: proxy.size.width, sidebarOpen: showSidebar)
 
             ZStack(alignment: .topLeading) {
                 Group {
@@ -38,7 +40,7 @@ struct ContentView: View {
                 .background(Theme.canvas)
 
                 HStack(spacing: 0) {
-                    Sidebar(controller: controller, showSearch: $showSearch, themeMode: $themeMode)
+                    Sidebar(controller: controller, showSearch: $showSearch)
                         .frame(width: Self.sidebarWidth)
                         .background(Theme.sidebar)
                     Rectangle()
@@ -48,13 +50,16 @@ struct ContentView: View {
                 .offset(x: showSidebar ? 0 : -(Self.sidebarWidth + 1))
                 .allowsHitTesting(showSidebar)
 
-                SidebarToggleButton(label: showSidebar ? "Hide sidebar" : "Show sidebar") {
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        showSidebar.toggle()
+                HStack(spacing: 2) {
+                    SidebarToggleButton(label: showSidebar ? "Hide sidebar" : "Show sidebar") {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            showSidebar.toggle()
+                        }
                     }
+                    ThemeToggleButton(mode: $themeMode)
                 }
-                .padding(.leading, 78)
-                .padding(.top, 6)
+                .padding(.leading, Self.titleBarControlsLeading)
+                .padding(.top, Self.trafficLightCenterY - 14)
             }
         }
         .background(Theme.canvas)
@@ -65,21 +70,20 @@ struct ContentView: View {
         .onReceive(timer) { _ in
             controller.pollExternalChanges()
         }
+        .task {
+            await DesignSnapshot.run(
+                controller: controller,
+                showSidebar: $showSidebar,
+                themeMode: $themeMode,
+                showSearch: $showSearch
+            )
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
             controller.flushDraft()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             controller.flushDraft()
         }
-    }
-
-    private func editorLayout(windowWidth: CGFloat, sidebarOpen: Bool) -> (leading: CGFloat, width: CGFloat) {
-        let sidebar: CGFloat = sidebarOpen ? Self.sidebarWidth : 0
-        let available = max(320, windowWidth - sidebar)
-        let width = min(680, max(320, available - 72))
-        let centered = (windowWidth - width) / 2
-        let leading = max(centered, sidebar + 36)
-        return (leading, width)
     }
 }
 
