@@ -47,9 +47,6 @@ public final class OutlinerController: ObservableObject {
     }
 
     public var pageTitle: String? {
-        if zoomedBlockId != nil, let last = breadcrumb.last {
-            return last.label
-        }
         if let id = selectedPageId {
             return pages.first(where: { $0.id == id })?.title
         }
@@ -395,6 +392,11 @@ public final class OutlinerController: ObservableObject {
         leaveBlock()
         zoomedBlockId = crumb.blockId
         reload()
+    }
+
+    public func zoomOutOneLevel() {
+        guard zoomedBlockId != nil, breadcrumb.count >= 2 else { return }
+        zoomOut(to: breadcrumb[breadcrumb.count - 2])
     }
 
     public func moveFocusedBlock(up: Bool, caret: Int) {

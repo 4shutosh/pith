@@ -29,8 +29,7 @@ struct ContentView: View {
                         OutlinerView(
                             controller: controller,
                             contentLeading: layout.leading,
-                            contentWidth: layout.width,
-                            headerLeading: showSidebar ? Self.sidebarWidth + 20 : 78
+                            contentWidth: layout.width
                         )
                     }
                 }
@@ -140,6 +139,9 @@ struct PithMacApp: App {
                     .keyboardShortcut("j", modifiers: .command)
                 Button("All pages") { controller.showAllPages() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
+                Button("Zoom Out") { controller.zoomOutOneLevel() }
+                    .keyboardShortcut("[", modifiers: .command)
+                    .disabled(controller.zoomedBlockId == nil)
                 Divider()
                 Button(showSidebar ? "Hide Sidebar" : "Show Sidebar") {
                     withAnimation(.easeOut(duration: 0.16)) {

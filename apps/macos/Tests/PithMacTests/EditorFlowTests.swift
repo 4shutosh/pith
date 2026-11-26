@@ -37,9 +37,18 @@ final class EditorFlowTests: XCTestCase {
         controller.zoom(into: parentId)
         XCTAssertEqual(outline(controller), ["Parent", "  Child"])
         XCTAssertEqual(controller.breadcrumb.map(\.label), [controller.todayTitle, "Parent"])
-        XCTAssertEqual(controller.pageTitle, "Parent")
+        XCTAssertEqual(controller.pageTitle, controller.todayTitle)
+        XCTAssertTrue(controller.isShowingToday)
+
+        let childId = controller.rows[1].id
+        controller.zoom(into: childId)
+        XCTAssertEqual(controller.breadcrumb.map(\.label), [controller.todayTitle, "Parent", "Child"])
+        controller.zoomOutOneLevel()
+        XCTAssertEqual(controller.zoomedBlockId, parentId)
 
         controller.zoomOut(to: controller.breadcrumb[0])
+        XCTAssertNil(controller.zoomedBlockId)
+        controller.zoomOutOneLevel()
         XCTAssertNil(controller.zoomedBlockId)
         XCTAssertEqual(outline(controller), ["Parent", "  Child", "Sibling"])
     }
@@ -167,6 +176,30 @@ final class EditorFlowTests: XCTestCase {
         let hit = try XCTUnwrap(controller.searchHitsFor("needle").first)
         controller.openSearchHit(hit)
         XCTAssertEqual(controller.rows.first { $0.id == controller.focusedBlockId }?.renderedContent, "needle row")
+    }
+}
+
+final class ZoomTrailTests: XCTestCase {
+    private func crumbs(_ labels: [String]) -> [FfiCrumb] {
+        labels.enumerated().map { index, label in FfiCrumb(blockId: index == 0 ? nil : "b\(index)", label: label) }
+    }
+
+    func testTheTrailShowsAncestorsButNotTheZoomedBlock() {
+        let trail = crumbs(["Today", "A", "B"])
+        XCTAssertEqual(ZoomTrail.items(trail, maxVisible: 4), [.crumb(trail[0]), .crumb(trail[1])])
+    }
+
+    func testALongTrailKeepsThePageAndTheNearestAncestors() {
+        let trail = crumbs(["Today", "A", "B", "C", "D", "E"])
+        XCTAssertEqual(
+            ZoomTrail.items(trail, maxVisible: 4),
+            [.crumb(trail[0]), .hidden([trail[1]]), .crumb(trail[2]), .crumb(trail[3]), .crumb(trail[4])]
+        )
+    }
+
+    func testATrailAtTheLimitIsNotShortened() {
+        let trail = crumbs(["Today", "A", "B", "C", "D"])
+        XCTAssertEqual(ZoomTrail.items(trail, maxVisible: 4), trail.dropLast().map(TrailItem.crumb))
     }
 }
 

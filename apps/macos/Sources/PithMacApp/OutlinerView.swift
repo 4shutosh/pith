@@ -7,20 +7,16 @@ struct OutlinerView: View {
     @ObservedObject var controller: OutlinerController
     let contentLeading: CGFloat
     let contentWidth: CGFloat
-    let headerLeading: CGFloat
 
     var body: some View {
         VStack(spacing: 0) {
-            if controller.zoomedBlockId != nil {
-                ZoomHeader(controller: controller, leadingPadding: headerLeading)
-            }
             ScrollViewReader { proxy in
                 ScrollView {
                     HStack(spacing: 0) {
                         content
                             .frame(width: contentWidth, alignment: .leading)
                             .padding(.leading, contentLeading)
-                            .padding(.top, controller.zoomedBlockId == nil ? 58 : 28)
+                            .padding(.top, 58)
                             .padding(.bottom, 140)
                         Spacer(minLength: 0)
                     }
@@ -43,12 +39,19 @@ struct OutlinerView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(controller.pageTitle ?? "")
-                .font(Typography.ui(28, .semibold))
-                .tracking(-0.4)
-                .foregroundColor(Theme.textStrong)
+            if controller.zoomedBlockId != nil {
+                ZoomTrailView(controller: controller)
+                    .padding(.bottom, 18)
+            } else {
+                Text(controller.pageTitle ?? "")
+                    .font(Typography.ui(28, .semibold))
+                    .tracking(-0.4)
+                    .foregroundColor(Theme.textStrong)
+            }
 
-            if let subtitle {
+            if controller.zoomedBlockId != nil {
+                EmptyView()
+            } else if let subtitle {
                 Text(subtitle)
                     .font(Typography.ui(13))
                     .foregroundColor(Theme.textTertiary)
@@ -330,36 +333,59 @@ private struct BacklinkCard: View {
     }
 }
 
-private struct ZoomHeader: View {
+private struct ZoomTrailView: View {
     @ObservedObject var controller: OutlinerController
-    let leadingPadding: CGFloat
 
     var body: some View {
-        HStack(spacing: 8) {
-            ForEach(Array(controller.breadcrumb.enumerated()), id: \.offset) { index, crumb in
+        HStack(spacing: 2) {
+            ForEach(Array(ZoomTrail.items(controller.breadcrumb, maxVisible: 4).enumerated()), id: \.offset) { index, item in
                 if index > 0 {
-                    Text("/").foregroundColor(Theme.bullet)
+                    ChevronIcon(expanded: false)
+                        .foregroundColor(Theme.bullet)
+                        .frame(width: 14)
                 }
-                let isLast = index == controller.breadcrumb.count - 1
-                Button {
-                    controller.zoomOut(to: crumb)
-                } label: {
-                    Text(crumb.label)
-                        .foregroundColor(isLast ? Theme.textPrimary : Theme.textSecondary)
-                        .fontWeight(isLast ? .medium : .regular)
-                        .lineLimit(1)
+                switch item {
+                case let .crumb(crumb):
+                    TrailButton(label: crumb.label) { controller.zoomOut(to: crumb) }
+                case let .hidden(crumbs):
+                    Menu {
+                        ForEach(Array(crumbs.enumerated()), id: \.offset) { _, crumb in
+                            Button(crumb.label) { controller.zoomOut(to: crumb) }
+                        }
+                    } label: {
+                        Text("…")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .foregroundColor(Theme.textTertiary)
                 }
-                .buttonStyle(.plain)
-                .disabled(isLast)
             }
-            Spacer()
         }
         .font(Typography.ui(13))
-        .padding(.leading, leadingPadding)
-        .padding(.trailing, 20)
-        .frame(height: 46)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Theme.divider).frame(height: 1)
+        .padding(.leading, -6)
+    }
+}
+
+private struct TrailButton: View {
+    let label: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 180, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .foregroundColor(isHovered ? Theme.textPrimary : Theme.textTertiary)
+                .padding(.horizontal, 6)
+                .frame(height: 24)
+                .background(RoundedRectangle(cornerRadius: 5).fill(isHovered ? Theme.hover : Color.clear))
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
