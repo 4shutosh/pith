@@ -67,12 +67,19 @@ No other sizes. Weight carries emphasis (regular, medium, semibold); size carrie
 - **Hit targets:** at least 24 pt; rows and toolbar buttons 28 pt.
 - **Markers in text:** formatting markers (`**`, `*`, `~~`, `==`, backticks) are hidden outside editing and shown dimmed while editing. Page-link brackets currently stay visible.
 
+## Motion
+
+- Use the `Motion` tokens (`hover`, `fast`, `morph`, `drawer`, `pop`); never write a duration or spring inline.
+- Motion is short and quiet: state feedback under about 0.2 s, no decorative loops.
+- Every token returns no animation when the system's Reduce Motion setting is on, so animations respect it automatically.
+
 ## Keyboard first
 
 - **Every action has a keyboard path.** It has a shortcut, or at least an entry in the ⌘K palette and the menu bar. On-screen controls are a second path, never the only one.
 - **New actions are `PaletteCommand`s.** Add the case with its title, shortcut and keywords, its availability in `isAvailable`, and its effect in `perform`; then add it to the matching menu. The palette lists it automatically.
 - **No permanent toolbars on content.** Page headers show the title and subtitle only. Page actions live in the palette, the Page menu and right-click menus.
 - **Destructive commands have no single-key shortcut** and always confirm.
+- **One keyboard router.** Screens never install their own `NSEvent` monitors. A view that handles keys attaches `.keyScope(layer, whileEditingText:) { stroke in … }` and matches on named keys (`stroke.key`, `stroke.modifiers`), never raw key codes. Layers are `global` < `screen` < `overlay`; within a layer the newest scope goes first, a declined key falls through, and an open overlay is modal. Scopes skip keys while text is being edited unless they declare `whileEditingText: true`. Text-editing keys inside a block belong to the block's text view; app-wide shortcuts belong in the menu bar.
 
 ## Interaction
 
