@@ -267,6 +267,10 @@ struct OutlinerView: View {
                         isRenaming = false
                     }
                     .onExitCommand { isRenaming = false }
+            } else if controller.isJournalStream {
+                JournalTitleButton(title: controller.pageTitle ?? controller.todayTitle) {
+                    controller.openJournal(date: controller.todayTitle)
+                }
             } else {
                 Text(controller.pageTitle ?? "")
                     .font(Typography.ui(28, .semibold))
@@ -676,5 +680,24 @@ private struct JournalHeading: View {
             .padding(.bottom, 18)
         }
         .padding(.top, 48)
+    }
+}
+
+private struct JournalTitleButton: View {
+    let title: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Typography.ui(28, .semibold))
+                .tracking(-0.4)
+                .foregroundColor(isHovered ? Theme.textPrimary : Theme.textStrong)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Open \(title)")
     }
 }

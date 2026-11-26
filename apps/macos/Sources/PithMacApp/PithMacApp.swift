@@ -17,11 +17,12 @@ struct ContentView: View {
         GeometryReader { proxy in
             let layout = editorLayout(windowWidth: proxy.size.width, sidebarOpen: showSidebar)
 
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .topLeading) {
                 Group {
                     if controller.listScreen == .allPages {
                         PageListView(
                             controller: controller,
+                            showSearch: $showSearch,
                             contentLeading: layout.leading,
                             contentWidth: layout.width
                         )
@@ -37,7 +38,7 @@ struct ContentView: View {
                 .background(Theme.canvas)
 
                 HStack(spacing: 0) {
-                    Sidebar(controller: controller, showSearch: $showSearch)
+                    Sidebar(controller: controller, showSearch: $showSearch, themeMode: $themeMode)
                         .frame(width: Self.sidebarWidth)
                         .background(Theme.sidebar)
                     Rectangle()
@@ -47,20 +48,13 @@ struct ContentView: View {
                 .offset(x: showSidebar ? 0 : -(Self.sidebarWidth + 1))
                 .allowsHitTesting(showSidebar)
 
-                VStack {
-                    Spacer()
-                    HStack {
-                        SidebarToggleButton(label: showSidebar ? "Hide sidebar" : "Show sidebar") {
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                showSidebar.toggle()
-                            }
-                        }
-                        ThemeToggleButton(mode: $themeMode)
-                        Spacer()
+                SidebarToggleButton(label: showSidebar ? "Hide sidebar" : "Show sidebar") {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        showSidebar.toggle()
                     }
-                    .padding(.leading, 10)
-                    .padding(.bottom, 10)
                 }
+                .padding(.leading, 78)
+                .padding(.top, 6)
             }
         }
         .background(Theme.canvas)

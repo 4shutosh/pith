@@ -103,5 +103,14 @@ final class JournalStreamTests: XCTestCase {
 
         controller.openTodayJournal()
         XCTAssertTrue(controller.isJournalStream)
+
+        controller.openJournal(date: controller.todayTitle)
+        XCTAssertFalse(controller.isJournalStream)
+        XCTAssertEqual(controller.journalSections, [])
+        XCTAssertEqual(controller.rows.map(\.renderedContent), [])
+
+        controller.goBack()
+        XCTAssertTrue(controller.isJournalStream)
+        XCTAssertEqual(controller.rows.map(\.renderedContent), ["older"])
     }
 }

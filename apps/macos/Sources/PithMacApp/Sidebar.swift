@@ -5,6 +5,7 @@ import SwiftUI
 struct Sidebar: View {
     @ObservedObject var controller: OutlinerController
     @Binding var showSearch: Bool
+    @Binding var themeMode: ThemeMode
 
     private var destination: SidebarDestination? {
         controller.sidebarDestination
@@ -12,8 +13,15 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Spacer()
+                ThemeToggleButton(mode: $themeMode)
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 10)
+
             SearchFieldButton { showSearch = true }
-                .padding(.bottom, 14)
+                .padding(.bottom, 12)
 
             VStack(spacing: 1) {
                 SidebarNavItem(title: "Journals", shortcut: "⌘J", isSelected: destination == .journals) {
@@ -28,45 +36,34 @@ struct Sidebar: View {
                 }
             }
 
-            SectionLabel(title: "Favorites")
-            if controller.favoritePages.isEmpty {
-                Text("Star a page to pin it here")
-                    .font(Typography.ui(12))
-                    .foregroundColor(Theme.textTertiary)
-                    .padding(.horizontal, 10)
-                    .frame(height: 24)
-            } else {
-                ViewThatFits(in: .vertical) {
-                    favoritesList
-                    ScrollView(showsIndicators: false) { favoritesList }
-                }
-                .layoutPriority(1)
-            }
-
-            if !controller.recentPages.isEmpty {
-                SectionLabel(title: "Recent")
+            if !controller.favoritePages.isEmpty || !controller.recentPages.isEmpty {
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 1) {
-                        ForEach(controller.recentPages, id: \.id) { page in
-                            pageItem(page)
+                    VStack(alignment: .leading, spacing: 0) {
+                        if !controller.favoritePages.isEmpty {
+                            SectionLabel(title: "Favorites")
+                            VStack(spacing: 1) {
+                                ForEach(controller.favoritePages, id: \.id) { page in
+                                    pageItem(page)
+                                }
+                            }
+                        }
+
+                        if !controller.recentPages.isEmpty {
+                            SectionLabel(title: "Recent")
+                            VStack(spacing: 1) {
+                                ForEach(controller.recentPages, id: \.id) { page in
+                                    pageItem(page)
+                                }
+                            }
                         }
                     }
+                    .padding(.bottom, 12)
                 }
+            } else {
+                Spacer(minLength: 0)
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(.top, 44)
         .padding(.horizontal, 10)
-        .padding(.bottom, 48)
-    }
-
-    private var favoritesList: some View {
-        VStack(spacing: 1) {
-            ForEach(controller.favoritePages, id: \.id) { page in
-                pageItem(page)
-            }
-        }
     }
 
     private func pageItem(_ page: FfiPage) -> some View {
@@ -74,7 +71,8 @@ struct Sidebar: View {
             page: page,
             isSelected: destination == .page(page.id),
             onOpen: { controller.selectPage(page.id) },
-            onToggleFavorite: { controller.toggleFavorite(page.id) }
+            onToggleFavorite: { controller.toggleFavorite(page.id) },
+            onDelete: page.journalDay == nil ? { controller.deletePage(page.id) } : nil
         )
     }
 }
@@ -107,6 +105,7 @@ private struct SearchFieldButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .help("Search or create page (⌘K)")
         .accessibilityLabel("Search")
     }
 }
@@ -120,7 +119,7 @@ private struct SectionLabel: View {
             .tracking(0.3)
             .foregroundColor(Theme.textTertiary)
             .padding(.horizontal, 10)
-            .padding(.top, 22)
+            .padding(.top, 20)
             .padding(.bottom, 5)
     }
 }
@@ -144,7 +143,7 @@ private struct SidebarNavItem<Icon: View>: View {
                     .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textSecondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if let shortcut, isHovered {
+                if let shortcut {
                     Text(shortcut)
                         .font(Typography.ui(11))
                         .foregroundColor(Theme.textTertiary)
@@ -165,22 +164,14 @@ private struct SidebarPageItem: View {
     let isSelected: Bool
     let onOpen: () -> Void
     let onToggleFavorite: () -> Void
+    let onDelete: (() -> Void)?
     @State private var isHovered = false
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 9) {
-                Group {
-                    if page.journalDay != nil {
-                        TodayIcon()
-                    } else {
-                        DocIcon()
-                    }
-                }
-                .foregroundColor(isSelected ? Theme.textSecondary : Theme.bullet)
-                .frame(width: 15)
+            HStack(spacing: 0) {
                 Text(page.title)
-                    .font(Typography.ui(13))
+                    .font(Typography.ui(13, isSelected ? .medium : .regular))
                     .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -194,8 +185,11 @@ private struct SidebarPageItem: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .contextMenu {
-            Button("Open", action: onOpen)
             Button(page.favorite ? "Remove from Favorites" : "Add to Favorites", action: onToggleFavorite)
+            if let onDelete {
+                Divider()
+                Button("Delete Page", role: .destructive, action: onDelete)
+            }
         }
     }
 }

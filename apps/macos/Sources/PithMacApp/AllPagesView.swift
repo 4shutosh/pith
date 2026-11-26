@@ -2,10 +2,18 @@ import PithCore
 import PithMacCore
 import SwiftUI
 
+private enum PageFilter: String, CaseIterable {
+    case all = "All"
+    case pages = "Pages"
+    case favorites = "Favorites"
+}
+
 struct PageListView: View {
     @ObservedObject var controller: OutlinerController
+    @Binding var showSearch: Bool
     let contentLeading: CGFloat
     let contentWidth: CGFloat
+    @State private var filter: PageFilter = .all
     private let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -13,22 +21,59 @@ struct PageListView: View {
     }()
 
     private var pages: [FfiPage] {
-        OutlinerController.recent(controller.pages, limit: controller.pages.count)
+        let source: [FfiPage]
+        switch filter {
+        case .all:
+            source = controller.pages
+        case .pages:
+            source = controller.pages.filter { $0.journalDay == nil }
+        case .favorites:
+            source = controller.pages.filter(\.favorite)
+        }
+        return OutlinerController.recent(source, limit: source.count)
     }
 
     var body: some View {
         ScrollView {
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("All pages")
-                        .font(Typography.ui(28, .semibold))
-                        .tracking(-0.4)
-                        .foregroundColor(Theme.textStrong)
-                    Text(pages.count == 1 ? "1 page" : "\(pages.count) pages")
-                        .font(Typography.ui(13))
-                        .foregroundColor(Theme.textTertiary)
-                        .padding(.top, 6)
-                        .padding(.bottom, 24)
+                    HStack(alignment: .center) {
+                        Text("All pages")
+                            .font(Typography.ui(28, .semibold))
+                            .tracking(-0.4)
+                            .foregroundColor(Theme.textStrong)
+                        Spacer()
+                        Button {
+                            showSearch = true
+                        } label: {
+                            HStack(spacing: 5) {
+                                PlusIcon()
+                                Text("New")
+                                    .font(Typography.ui(12, .medium))
+                            }
+                            .foregroundColor(Theme.textSecondary)
+                            .padding(.horizontal, 10)
+                            .frame(height: 26)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.hover))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Create or open page (⌘K)")
+                    }
+
+                    HStack(spacing: 6) {
+                        ForEach(PageFilter.allCases, id: \.self) { option in
+                            FilterChip(title: option.rawValue, isSelected: filter == option) {
+                                filter = option
+                            }
+                        }
+                        Spacer()
+                        Text(pages.count == 1 ? "1 page" : "\(pages.count) pages")
+                            .font(Typography.ui(12))
+                            .foregroundColor(Theme.textTertiary)
+                    }
+                    .padding(.top, 12)
+                    .padding(.bottom, 20)
 
                     LazyVStack(spacing: 2) {
                         ForEach(pages, id: \.id) { page in
@@ -53,6 +98,30 @@ struct PageListView: View {
     private func updatedLabel(_ page: FfiPage) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(page.updatedAt) / 1000)
         return relative.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+private struct FilterChip: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Typography.ui(12, isSelected ? .medium : .regular))
+                .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textTertiary)
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 

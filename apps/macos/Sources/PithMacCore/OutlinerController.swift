@@ -337,8 +337,16 @@ public final class OutlinerController: ObservableObject {
 
     public func deleteCurrentPage() {
         guard let page = currentPage else { return }
-        clearSelection()
-        leaveBlock()
+        deletePage(page.id)
+    }
+
+    public func deletePage(_ pageId: String) {
+        guard let page = pages.first(where: { $0.id == pageId }) else { return }
+        let wasCurrent = selectedPageId == page.id
+        if wasCurrent {
+            clearSelection()
+            leaveBlock()
+        }
         run {
             _ = try graph.applyOps(
                 ops: [.deletePage(id: page.id, expectedVersion: page.version)],
@@ -347,12 +355,16 @@ public final class OutlinerController: ObservableObject {
             backStack.removeAll { if case let .page(id, _) = $0 { return id == page.id } else { return false } }
             forwardStack.removeAll { if case let .page(id, _) = $0 { return id == page.id } else { return false } }
             syncHistoryFlags()
-            if canGoBack {
-                goBack()
+            if wasCurrent {
+                if canGoBack {
+                    goBack()
+                } else {
+                    isRestoringHistory = true
+                    openTodayJournal()
+                    isRestoringHistory = false
+                }
             } else {
-                isRestoringHistory = true
-                openTodayJournal()
-                isRestoringHistory = false
+                reload()
             }
         }
     }

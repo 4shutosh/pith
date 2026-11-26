@@ -76,4 +76,17 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(controller.favoritePages.map(\.title), [])
         XCTAssertEqual(controller.recentPages.map(\.title), ["Starred"])
     }
+
+    func testDeletingAnInactivePageFromSidebarKeepsCurrentPageOpen() throws {
+        let graph = try PithGraph.openInMemory()
+        let first = try page(graph, "First")
+        let second = try page(graph, "Second")
+        let controller = try OutlinerController(graph: graph)
+
+        controller.selectPage(first)
+        controller.deletePage(second)
+
+        XCTAssertEqual(controller.selectedPageId, first)
+        XCTAssertFalse(controller.pages.contains { $0.id == second })
+    }
 }
