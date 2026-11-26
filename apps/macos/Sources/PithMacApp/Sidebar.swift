@@ -5,7 +5,7 @@ import SwiftUI
 struct Sidebar: View {
     @ObservedObject var controller: OutlinerController
     @Binding var showSearch: Bool
-    @Binding var themeMode: ThemeMode
+    @State private var pendingDelete: FfiPage?
 
     private var destination: SidebarDestination? {
         controller.sidebarDestination
@@ -13,13 +13,6 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Spacer()
-                ThemeToggleButton(mode: $themeMode)
-            }
-            .padding(.top, 6)
-            .padding(.bottom, 10)
-
             SearchFieldButton { showSearch = true }
                 .padding(.bottom, 12)
 
@@ -36,34 +29,55 @@ struct Sidebar: View {
                 }
             }
 
-            if !controller.favoritePages.isEmpty || !controller.recentPages.isEmpty {
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        if !controller.favoritePages.isEmpty {
-                            SectionLabel(title: "Favorites")
-                            VStack(spacing: 1) {
-                                ForEach(controller.favoritePages, id: \.id) { page in
-                                    pageItem(page)
-                                }
-                            }
-                        }
-
-                        if !controller.recentPages.isEmpty {
-                            SectionLabel(title: "Recent")
-                            VStack(spacing: 1) {
-                                ForEach(controller.recentPages, id: \.id) { page in
-                                    pageItem(page)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.bottom, 12)
-                }
+            SectionLabel(title: "Favorites")
+            if controller.favoritePages.isEmpty {
+                Text("Star a page to pin it here")
+                    .font(Typography.ui(12))
+                    .foregroundColor(Theme.textTertiary)
+                    .padding(.leading, SidebarMetrics.labelInset)
+                    .frame(height: 24)
             } else {
-                Spacer(minLength: 0)
+                ViewThatFits(in: .vertical) {
+                    pageList(controller.favoritePages)
+                    ScrollView(showsIndicators: false) { pageList(controller.favoritePages) }
+                }
+                .layoutPriority(1)
+            }
+
+            if !controller.recentPages.isEmpty {
+                SectionLabel(title: "Recent")
+                ScrollView(showsIndicators: false) {
+                    pageList(controller.recentPages)
+                        .padding(.bottom, 12)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 44)
+        .padding(.horizontal, SidebarMetrics.outerInset)
+        .confirmationDialog(
+            "Delete page “\(pendingDelete?.title ?? "")”?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+        ) {
+            Button("Delete Page", role: .destructive) {
+                if let page = pendingDelete {
+                    controller.deletePage(page.id)
+                }
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("You can undo this with ⌘Z.")
+        }
+    }
+
+    private func pageList(_ pages: [FfiPage]) -> some View {
+        VStack(spacing: 1) {
+            ForEach(pages, id: \.id) { page in
+                pageItem(page)
             }
         }
-        .padding(.horizontal, 10)
     }
 
     private func pageItem(_ page: FfiPage) -> some View {
@@ -72,9 +86,18 @@ struct Sidebar: View {
             isSelected: destination == .page(page.id),
             onOpen: { controller.selectPage(page.id) },
             onToggleFavorite: { controller.toggleFavorite(page.id) },
-            onDelete: page.journalDay == nil ? { controller.deletePage(page.id) } : nil
+            onDelete: page.journalDay == nil ? { pendingDelete = page } : nil
         )
     }
+}
+
+enum SidebarMetrics {
+    static let outerInset: CGFloat = 10
+    static let rowInset: CGFloat = 10
+    static let iconWidth: CGFloat = 15
+    static let iconGap: CGFloat = 9
+    static let rowHeight: CGFloat = 28
+    static let labelInset: CGFloat = rowInset + iconWidth + iconGap
 }
 
 private struct SearchFieldButton: View {
@@ -83,9 +106,10 @@ private struct SearchFieldButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: SidebarMetrics.iconGap) {
                 SearchIcon(size: 13)
                     .foregroundColor(Theme.textTertiary)
+                    .frame(width: SidebarMetrics.iconWidth)
                 Text("Search")
                     .font(Typography.ui(13))
                     .foregroundColor(Theme.textTertiary)
@@ -94,7 +118,7 @@ private struct SearchFieldButton: View {
                     .font(Typography.ui(11))
                     .foregroundColor(Theme.textTertiary)
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, SidebarMetrics.rowInset)
             .frame(height: 30)
             .background(
                 RoundedRectangle(cornerRadius: 7)
@@ -118,9 +142,9 @@ private struct SectionLabel: View {
             .font(Typography.ui(11, .medium))
             .tracking(0.3)
             .foregroundColor(Theme.textTertiary)
-            .padding(.horizontal, 10)
-            .padding(.top, 20)
-            .padding(.bottom, 5)
+            .padding(.horizontal, SidebarMetrics.rowInset)
+            .padding(.top, 24)
+            .padding(.bottom, 6)
     }
 }
 
@@ -134,23 +158,23 @@ private struct SidebarNavItem<Icon: View>: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 9) {
+            HStack(spacing: SidebarMetrics.iconGap) {
                 icon()
                     .foregroundColor(isSelected ? Theme.textStrong : Theme.textTertiary)
-                    .frame(width: 15)
+                    .frame(width: SidebarMetrics.iconWidth)
                 Text(title)
                     .font(Typography.ui(13, .medium))
                     .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textSecondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if let shortcut {
+                if let shortcut, isHovered {
                     Text(shortcut)
                         .font(Typography.ui(11))
                         .foregroundColor(Theme.textTertiary)
                 }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 28)
+            .padding(.horizontal, SidebarMetrics.rowInset)
+            .frame(height: SidebarMetrics.rowHeight)
             .background(RowBackground(isSelected: isSelected, isHovered: isHovered))
             .contentShape(Rectangle())
         }
@@ -169,7 +193,16 @@ private struct SidebarPageItem: View {
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 0) {
+            HStack(spacing: SidebarMetrics.iconGap) {
+                Group {
+                    if page.journalDay != nil {
+                        TodayIcon()
+                    } else {
+                        DocIcon()
+                    }
+                }
+                .foregroundColor(isSelected ? Theme.textSecondary : Theme.bullet)
+                .frame(width: SidebarMetrics.iconWidth)
                 Text(page.title)
                     .font(Typography.ui(13, isSelected ? .medium : .regular))
                     .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textSecondary)
@@ -177,8 +210,8 @@ private struct SidebarPageItem: View {
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 28)
+            .padding(.horizontal, SidebarMetrics.rowInset)
+            .frame(height: SidebarMetrics.rowHeight)
             .background(RowBackground(isSelected: isSelected, isHovered: isHovered))
             .contentShape(Rectangle())
         }

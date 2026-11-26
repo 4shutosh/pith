@@ -173,6 +173,7 @@ private struct PageRow: View {
             RoundedRectangle(cornerRadius: 7)
                 .fill(isHovered ? Theme.hover : Color.clear)
         )
+        .padding(.horizontal, -12)
         .onHover { isHovered = $0 }
     }
 }

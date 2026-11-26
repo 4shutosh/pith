@@ -200,8 +200,8 @@ struct OutlinerView: View {
         Button {
             controller.ensureFirstBlockAndFocus()
         } label: {
-            HStack(spacing: 10) {
-                Circle().fill(Theme.bullet).frame(width: 5, height: 5).frame(width: 18)
+            HStack(spacing: OutlineRow.textGap) {
+                Circle().fill(Theme.bullet).frame(width: 5, height: 5).frame(width: OutlineRow.markerWidth)
                 Text("Start writing…")
                     .font(Typography.ui(15))
                     .foregroundColor(Theme.textTertiary)
@@ -211,7 +211,7 @@ struct OutlinerView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.leading, 14)
+        .padding(.leading, OutlineRow.disclosureWidth - OutlineRow.gutter)
     }
 
     private var journalStream: some View {
@@ -251,6 +251,7 @@ struct OutlinerView: View {
             completion: isFocused ? controller.completion : nil,
             controller: controller
         )
+        .padding(.leading, -OutlineRow.gutter)
         .id(row.id)
     }
 
@@ -383,7 +384,11 @@ private struct OutlineRow: View {
     let controller: OutlinerController
     @State private var isHovered = false
 
-    private static let indent: CGFloat = 24
+    static let indent: CGFloat = 24
+    static let disclosureWidth: CGFloat = 14
+    static let markerWidth: CGFloat = 18
+    static let textGap: CGFloat = 8
+    static let gutter: CGFloat = disclosureWidth + markerWidth + textGap
     private static let guideX: CGFloat = 22.5
     private static let rowPadding: CGFloat = 4
 
@@ -391,9 +396,9 @@ private struct OutlineRow: View {
         let presentation = BlockPresentation.runs(row.spans)
         HStack(alignment: .top, spacing: 0) {
             disclosure
-                .frame(width: 14, height: BlockStyle.lineHeight)
+                .frame(width: Self.disclosureWidth, height: BlockStyle.lineHeight)
             marker(presentation.status)
-                .frame(width: 18, height: BlockStyle.lineHeight)
+                .frame(width: Self.markerWidth, height: BlockStyle.lineHeight)
             BlockTextView(
                 blockId: row.id,
                 isEditing: isFocused,
@@ -434,7 +439,7 @@ private struct OutlineRow: View {
                 },
                 onPaste: { controller.paste($0, selectionStart: $1, selectionEnd: $2) }
             )
-            .padding(.leading, 8)
+            .padding(.leading, Self.textGap)
         }
         .padding(.leading, CGFloat(row.depth) * Self.indent)
         .padding(.vertical, Self.rowPadding)
@@ -666,7 +671,7 @@ private struct JournalHeading: View {
             Rectangle()
                 .fill(Theme.divider)
                 .frame(height: 1)
-                .padding(.bottom, 36)
+                .padding(.bottom, 40)
             Button(action: action) {
                 Text(title)
                     .font(Typography.ui(22, .semibold))
@@ -677,9 +682,9 @@ private struct JournalHeading: View {
             .buttonStyle(.plain)
             .onHover { isHovered = $0 }
             .help("Open \(title)")
-            .padding(.bottom, 18)
+            .padding(.bottom, 16)
         }
-        .padding(.top, 48)
+        .padding(.top, 40)
     }
 }
 

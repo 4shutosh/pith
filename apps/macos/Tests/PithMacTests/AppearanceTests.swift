@@ -137,6 +137,22 @@ final class AppearanceTests: XCTestCase {
         XCTAssertTrue(NSFontManager.shared.traits(of: try XCTUnwrap(italicFont)).contains(.italicFontMask))
     }
 
+    func testInlineCodeHidesItsBackticksOutsideEditing() {
+        let runs = BlockPresentation.runs([.text(text: "run "), .code(text: "`cargo test`")]).runs
+        XCTAssertEqual(runs.map(\.display).joined(), "run cargo test")
+        XCTAssertEqual(runs.map(\.source).joined(), "run `cargo test`")
+        XCTAssertEqual(BlockPresentation.editUTF16Offset(forDisplayUTF16: 5, in: runs), 6)
+        let unclosed = BlockPresentation.runs([.code(text: "``")]).runs
+        XCTAssertEqual(unclosed.map(\.display).joined(), "``")
+    }
+
+    func testTheEditorColumnIsCentredInThePaneBesideTheSidebar() {
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 1280, sidebarOpen: true), EditorLayout(leading: 408.5, width: 680))
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 1280, sidebarOpen: false), EditorLayout(leading: 300, width: 680))
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 820, sidebarOpen: true), EditorLayout(leading: 281, width: 475))
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 600, sidebarOpen: true), EditorLayout(leading: 281, width: 320))
+    }
+
     func testColumnHelpers() {
         XCTAssertEqual(TextOffsets.column(ofScalar: 13, in: "abc\ndefghij\nxy"), 1)
         XCTAssertEqual(TextOffsets.offsetInLastLine(atColumn: 1, in: "abc\ndef"), 5)

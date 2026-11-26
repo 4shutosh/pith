@@ -150,7 +150,16 @@ public enum BlockPresentation {
         case let .text(text):
             return [DisplayRun(display: text, source: text, style: .plain)]
         case let .code(text):
-            return [DisplayRun(display: text, source: text, style: .code)]
+            let ticks = String(text.prefix(while: { $0 == "`" }))
+            guard ticks.count * 2 < text.count, text.hasSuffix(ticks) else {
+                return [DisplayRun(display: text, source: text, style: .code)]
+            }
+            let inner = String(text.dropFirst(ticks.count).dropLast(ticks.count))
+            return [
+                DisplayRun(display: "", source: ticks, style: .bracket),
+                DisplayRun(display: inner, source: inner, style: .code),
+                DisplayRun(display: "", source: ticks, style: .bracket),
+            ]
         case let .bold(text, source):
             return hiddenMarkers(text: text, source: source, style: .bold)
         case let .italic(text, source):
