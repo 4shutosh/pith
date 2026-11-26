@@ -2,8 +2,9 @@ import PithCore
 import PithMacCore
 import SwiftUI
 
-struct AllPagesView: View {
+struct PageListView: View {
     @ObservedObject var controller: OutlinerController
+    let screen: ListScreen
     let contentLeading: CGFloat
     let contentWidth: CGFloat
     private let relative: RelativeDateTimeFormatter = {
@@ -13,28 +14,51 @@ struct AllPagesView: View {
     }()
 
     private var pages: [FfiPage] {
-        OutlinerController.recent(controller.pages, limit: controller.pages.count)
+        switch screen {
+        case .allPages: return OutlinerController.recent(controller.pages, limit: controller.pages.count)
+        case .favorites: return controller.favoritePages
+        }
+    }
+
+    private var title: String {
+        switch screen {
+        case .allPages: return "All pages"
+        case .favorites: return "Favorites"
+        }
     }
 
     var body: some View {
         ScrollView {
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("All pages")
+                    Text(title)
                         .font(Typography.ui(28, .semibold))
                         .tracking(-0.4)
                         .foregroundColor(Theme.textStrong)
-                    Text(controller.pages.count == 1 ? "1 page" : "\(controller.pages.count) pages")
+                    Text(pages.count == 1 ? "1 page" : "\(pages.count) pages")
                         .font(Typography.ui(13))
                         .foregroundColor(Theme.textTertiary)
                         .padding(.top, 6)
                         .padding(.bottom, 24)
 
+                    if pages.isEmpty && screen == .favorites {
+                        HStack(spacing: 8) {
+                            StarIcon(filled: false).foregroundColor(Theme.textTertiary)
+                            Text("Star a page to pin it here and in the sidebar.")
+                                .font(Typography.ui(14))
+                                .foregroundColor(Theme.textTertiary)
+                        }
+                        .padding(.horizontal, 12)
+                    }
+
                     LazyVStack(spacing: 2) {
                         ForEach(pages, id: \.id) { page in
-                            PageRow(page: page, updated: updatedLabel(page)) {
-                                controller.selectPage(page.id)
-                            }
+                            PageRow(
+                                page: page,
+                                updated: updatedLabel(page),
+                                onOpen: { controller.selectPage(page.id) },
+                                onToggleFavorite: { controller.toggleFavorite(page.id) }
+                            )
                         }
                     }
                 }
@@ -56,38 +80,51 @@ struct AllPagesView: View {
 private struct PageRow: View {
     let page: FfiPage
     let updated: String
-    let action: () -> Void
+    let onOpen: () -> Void
+    let onToggleFavorite: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Text(page.title)
-                    .font(Typography.ui(14))
-                    .foregroundColor(isHovered ? Theme.textStrong : Theme.textPrimary)
-                    .lineLimit(1)
-                if page.journalDay != nil {
-                    Text("Journal")
-                        .font(Typography.ui(11))
-                        .foregroundColor(Theme.textTertiary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Theme.elevated))
-                }
-                Spacer()
-                Text(updated)
-                    .font(Typography.ui(12))
+        HStack(spacing: 10) {
+            Button(action: onOpen) {
+                HStack(spacing: 10) {
+                    Group {
+                        if page.journalDay != nil {
+                            TodayIcon()
+                        } else {
+                            DocIcon()
+                        }
+                    }
                     .foregroundColor(Theme.textTertiary)
+                    Text(page.title)
+                        .font(Typography.ui(14))
+                        .foregroundColor(isHovered ? Theme.textStrong : Theme.textPrimary)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(updated)
+                        .font(Typography.ui(12))
+                        .foregroundColor(Theme.textTertiary)
+                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .frame(height: 38)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(isHovered ? Theme.hover : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button(action: onToggleFavorite) {
+                StarIcon(filled: page.favorite)
+                    .foregroundColor(page.favorite ? Theme.accent : Theme.textTertiary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(page.favorite || isHovered ? 1 : 0)
+            .help(page.favorite ? "Remove from Favorites" : "Add to Favorites")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(isHovered ? Theme.hover : Color.clear)
+        )
         .onHover { isHovered = $0 }
     }
 }

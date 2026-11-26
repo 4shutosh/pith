@@ -6,77 +6,105 @@ struct Sidebar: View {
     @ObservedObject var controller: OutlinerController
     @Binding var showSearch: Bool
 
+    private var destination: SidebarDestination? {
+        controller.sidebarDestination
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(spacing: 2) {
-                SidebarNavItem(title: "Today", shortcut: "⌘J", isSelected: controller.isShowingToday) {
+            SearchFieldButton { showSearch = true }
+                .padding(.bottom, 14)
+
+            VStack(spacing: 1) {
+                SidebarNavItem(title: "Journals", shortcut: "⌘J", isSelected: destination == .journals) {
                     TodayIcon()
                 } action: {
                     controller.openTodayJournal()
                 }
-                SidebarNavItem(title: "All pages", isSelected: controller.isShowingAllPages) {
+                SidebarNavItem(title: "Favorites", shortcut: "⇧⌘F", isSelected: destination == .favorites) {
+                    StarIcon(filled: false)
+                } action: {
+                    controller.showFavorites()
+                }
+                SidebarNavItem(title: "All pages", shortcut: "⇧⌘P", isSelected: destination == .allPages) {
                     PagesIcon()
                 } action: {
                     controller.showAllPages()
                 }
-                SidebarNavItem(title: "Search", shortcut: "⌘K", isSelected: false) {
-                    SearchIcon()
-                } action: {
-                    showSearch = true
-                }
             }
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    if !controller.favoritePages.isEmpty {
-                        SectionLabel(title: "Favorites")
-                        VStack(spacing: 2) {
-                            ForEach(controller.favoritePages, id: \.id) { page in
-                                SidebarPageItem(
-                                    title: page.title,
-                                    isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
-                                ) {
-                                    controller.selectPage(page.id)
-                                }
-                            }
-                        }
+            if !controller.sidebarFavorites.isEmpty {
+                SectionLabel(title: "Favorites")
+                VStack(spacing: 1) {
+                    ForEach(controller.sidebarFavorites, id: \.id) { page in
+                        pageItem(page)
                     }
-
-                    if !controller.journals.isEmpty {
-                        SectionLabel(title: "Journals")
-                        VStack(spacing: 2) {
-                            ForEach(controller.journals.prefix(7), id: \.id) { page in
-                                SidebarPageItem(
-                                    title: page.title,
-                                    isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
-                                ) {
-                                    controller.selectPage(page.id)
-                                }
-                            }
-                        }
-                    }
-
-                    if !controller.recentPages.isEmpty {
-                        SectionLabel(title: "Recent")
-                        VStack(spacing: 2) {
-                            ForEach(controller.recentPages, id: \.id) { page in
-                                SidebarPageItem(
-                                    title: page.title,
-                                    isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
-                                ) {
-                                    controller.selectPage(page.id)
-                                }
-                            }
+                    let hidden = controller.favoritePages.count - controller.sidebarFavorites.count
+                    if hidden > 0 {
+                        MoreLink(label: "View all \(controller.favoritePages.count)") {
+                            controller.showFavorites()
                         }
                     }
                 }
             }
 
-            Spacer(minLength: 12)
+            if !controller.recentPages.isEmpty {
+                SectionLabel(title: "Recent")
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 1) {
+                        ForEach(controller.recentPages, id: \.id) { page in
+                            pageItem(page)
+                        }
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
         }
         .padding(.top, 44)
         .padding(.horizontal, 10)
-        .padding(.bottom, 44)
+        .padding(.bottom, 48)
+    }
+
+    private func pageItem(_ page: FfiPage) -> some View {
+        SidebarPageItem(
+            page: page,
+            isSelected: destination == .page(page.id),
+            onOpen: { controller.selectPage(page.id) },
+            onToggleFavorite: { controller.toggleFavorite(page.id) }
+        )
+    }
+}
+
+private struct SearchFieldButton: View {
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                SearchIcon(size: 13)
+                    .foregroundColor(Theme.textTertiary)
+                Text("Search")
+                    .font(Typography.ui(13))
+                    .foregroundColor(Theme.textTertiary)
+                Spacer(minLength: 0)
+                Text("⌘K")
+                    .font(Typography.ui(11))
+                    .foregroundColor(Theme.textTertiary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isHovered ? Theme.hover : Theme.canvas)
+            )
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.divider, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel("Search")
     }
 }
 
@@ -86,11 +114,11 @@ private struct SectionLabel: View {
     var body: some View {
         Text(title)
             .font(Typography.ui(11, .medium))
-            .tracking(0.4)
+            .tracking(0.3)
             .foregroundColor(Theme.textTertiary)
-            .padding(.horizontal, 8)
-            .padding(.top, 24)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 10)
+            .padding(.top, 22)
+            .padding(.bottom, 5)
     }
 }
 
@@ -106,25 +134,22 @@ private struct SidebarNavItem<Icon: View>: View {
         Button(action: action) {
             HStack(spacing: 9) {
                 icon()
-                    .foregroundColor(isSelected ? Theme.accent : (isHovered ? Theme.textSecondary : Theme.textTertiary))
+                    .foregroundColor(isSelected ? Theme.textStrong : Theme.textTertiary)
                     .frame(width: 15)
                 Text(title)
-                    .font(Typography.ui(13, isSelected ? .medium : .regular))
-                    .foregroundColor(isSelected ? Theme.textStrong : (isHovered ? Theme.textPrimary : Theme.textSecondary))
+                    .font(Typography.ui(13, .medium))
+                    .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textSecondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if let shortcut {
+                if let shortcut, isHovered {
                     Text(shortcut)
                         .font(Typography.ui(11))
                         .foregroundColor(Theme.textTertiary)
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(height: 29)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
-            )
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(RowBackground(isSelected: isSelected, isHovered: isHovered))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -133,27 +158,68 @@ private struct SidebarNavItem<Icon: View>: View {
 }
 
 private struct SidebarPageItem: View {
-    let title: String
+    let page: FfiPage
     let isSelected: Bool
+    let onOpen: () -> Void
+    let onToggleFavorite: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 9) {
+                Group {
+                    if page.journalDay != nil {
+                        TodayIcon()
+                    } else {
+                        DocIcon()
+                    }
+                }
+                .foregroundColor(isSelected ? Theme.textSecondary : Theme.bullet)
+                .frame(width: 15)
+                Text(page.title)
+                    .font(Typography.ui(13))
+                    .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(RowBackground(isSelected: isSelected, isHovered: isHovered))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            Button("Open", action: onOpen)
+            Button(page.favorite ? "Remove from Favorites" : "Add to Favorites", action: onToggleFavorite)
+        }
+    }
+}
+
+private struct RowBackground: View {
+    let isSelected: Bool
+    let isHovered: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
+    }
+}
+
+private struct MoreLink: View {
+    let label: String
     let action: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 0) {
-                Text(title)
-                    .font(Typography.ui(13, isSelected ? .medium : .regular))
-                    .foregroundColor(isSelected ? Theme.textStrong : (isHovered ? Theme.textPrimary : Theme.textSecondary))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? Theme.selected : (isHovered ? Theme.hover : Color.clear))
-            )
-            .contentShape(Rectangle())
+            Text(label)
+                .font(Typography.ui(12))
+                .foregroundColor(isHovered ? Theme.textSecondary : Theme.textTertiary)
+                .padding(.leading, 34)
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }

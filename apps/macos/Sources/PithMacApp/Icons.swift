@@ -236,3 +236,19 @@ struct MoonIcon: View {
         .frame(width: 15, height: 15)
     }
 }
+
+struct DocIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let rect = CGRect(x: 2.5, y: 1.5, width: size.width - 5, height: size.height - 3)
+            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .foreground, lineWidth: 1.2)
+            var lines = Path()
+            for y in [rect.minY + 4, rect.minY + 6.8] {
+                lines.move(to: CGPoint(x: rect.minX + 2.5, y: y))
+                lines.addLine(to: CGPoint(x: rect.maxX - 2.5, y: y))
+            }
+            context.stroke(lines, with: .foreground, style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+        }
+        .frame(width: 14, height: 14)
+    }
+}

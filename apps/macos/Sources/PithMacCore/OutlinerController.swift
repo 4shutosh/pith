@@ -6,7 +6,20 @@ public enum NavTarget: Equatable {
     case page(id: String, zoomedBlockId: String?)
     case pendingJournal(title: String)
     case allPages
+    case favorites
     case journals
+}
+
+public enum ListScreen: Equatable {
+    case allPages
+    case favorites
+}
+
+public enum SidebarDestination: Equatable {
+    case journals
+    case favorites
+    case allPages
+    case page(String)
 }
 
 @MainActor
@@ -30,7 +43,7 @@ public final class OutlinerController: ObservableObject {
     @Published public var cursorRequestSeq: UInt64 = 0
     @Published public var searchQuery: String = ""
     @Published public var searchHits: [FfiSearchHit] = []
-    @Published public var isShowingAllPages: Bool = false
+    @Published public private(set) var listScreen: ListScreen?
     @Published public var zoomedBlockId: String?
     @Published public var breadcrumb: [FfiCrumb] = []
     @Published public var completion: CompletionState?
@@ -82,11 +95,11 @@ public final class OutlinerController: ObservableObject {
     }
 
     public var isShowingToday: Bool {
-        !isShowingAllPages && pageTitle == todayTitle
+        listScreen == nil && pageTitle == todayTitle
     }
 
     public var isShowingJournal: Bool {
-        !isShowingAllPages && (pendingJournalTitle != nil || currentPage?.journalDay != nil)
+        listScreen == nil && (pendingJournalTitle != nil || currentPage?.journalDay != nil)
     }
 
     public var currentJournalDate: String? {
@@ -105,8 +118,43 @@ public final class OutlinerController: ObservableObject {
         !isJournalStream && UInt64(rows.count) < totalVisible
     }
 
+    public static let sidebarFavoritesLimit = 7
+
+    public var isShowingAllPages: Bool {
+        listScreen == .allPages
+    }
+
+    public var sidebarFavorites: [FfiPage] {
+        Array(favoritePages.prefix(Self.sidebarFavoritesLimit))
+    }
+
     public var recentPages: [FfiPage] {
-        Self.recent(pages, limit: 8)
+        Self.recent(pages.filter { $0.journalDay == nil && !$0.favorite }, limit: 8)
+    }
+
+    public var sidebarDestination: SidebarDestination? {
+        switch listScreen {
+        case .allPages: return .allPages
+        case .favorites: return .favorites
+        case nil: break
+        }
+        if isJournalStream && zoomedBlockId == nil {
+            return .journals
+        }
+        if let id = selectedPageId,
+           sidebarFavorites.contains(where: { $0.id == id }) || recentPages.contains(where: { $0.id == id }) {
+            return .page(id)
+        }
+        return isShowingJournal ? .journals : nil
+    }
+
+    public func showFavorites() {
+        pushHistoryIfNeeded(for: .favorites)
+        clearSelection()
+        leaveBlock()
+        isJournalStream = false
+        listScreen = .favorites
+        run { pages = try graph.listPages() }
     }
 
     public static func recent(_ pages: [FfiPage], limit: Int) -> [FfiPage] {
@@ -222,7 +270,7 @@ public final class OutlinerController: ObservableObject {
         clearSelection()
         leaveBlock()
         isJournalStream = false
-        isShowingAllPages = false
+        listScreen = nil
         zoomedBlockId = nil
         windowOffset = 0
         pendingJournalTitle = nil
@@ -254,7 +302,7 @@ public final class OutlinerController: ObservableObject {
         if asStream {
             journalStreamDays = Self.journalStreamStep
         }
-        isShowingAllPages = false
+        listScreen = nil
         zoomedBlockId = nil
         windowOffset = 0
         rows = []
@@ -285,7 +333,7 @@ public final class OutlinerController: ObservableObject {
         clearSelection()
         leaveBlock()
         isJournalStream = false
-        isShowingAllPages = true
+        listScreen = .allPages
         run {
             pages = try graph.listPages()
             journals = try graph.listJournals(limit: 30)
@@ -360,7 +408,8 @@ public final class OutlinerController: ObservableObject {
     }
 
     private func currentNavTarget() -> NavTarget? {
-        if isShowingAllPages { return .allPages }
+        if listScreen == .allPages { return .allPages }
+        if listScreen == .favorites { return .favorites }
         if isJournalStream && zoomedBlockId == nil { return .journals }
         if let id = selectedPageId { return .page(id: id, zoomedBlockId: zoomedBlockId) }
         if let title = pendingJournalTitle { return .pendingJournal(title: title) }
@@ -392,7 +441,7 @@ public final class OutlinerController: ObservableObject {
         isJournalStream = false
         switch target {
         case .journals:
-            isShowingAllPages = false
+            listScreen = nil
             zoomedBlockId = nil
             isJournalStream = true
             if let today = try? graph.journalPage(date: nil) {
@@ -403,14 +452,17 @@ public final class OutlinerController: ObservableObject {
                 pendingJournalTitle = todayTitle
             }
             reload()
+        case .favorites:
+            listScreen = .favorites
+            run { pages = try graph.listPages() }
         case .allPages:
-            isShowingAllPages = true
+            listScreen = .allPages
             run {
                 pages = try graph.listPages()
                 journals = try graph.listJournals(limit: 30)
             }
         case let .pendingJournal(title):
-            isShowingAllPages = false
+            listScreen = nil
             zoomedBlockId = nil
             if let existing = try? graph.journalPage(date: title) {
                 selectedPageId = existing.id
@@ -421,7 +473,7 @@ public final class OutlinerController: ObservableObject {
             }
             reload()
         case let .page(id, zoomed):
-            isShowingAllPages = false
+            listScreen = nil
             pendingJournalTitle = nil
             selectedPageId = id
             zoomedBlockId = zoomed
