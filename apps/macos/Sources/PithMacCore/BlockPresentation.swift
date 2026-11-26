@@ -100,6 +100,15 @@ public enum BlockPresentation {
         return editStart
     }
 
+    private static func hiddenMarkers(text: String, source: String, style: RunStyle) -> [DisplayRun] {
+        let marker = String(source.prefix((source.count - text.count) / 2))
+        return [
+            DisplayRun(display: "", source: marker, style: .bracket),
+            DisplayRun(display: text, source: text, style: style),
+            DisplayRun(display: "", source: marker, style: .bracket),
+        ]
+    }
+
     private static func splitTask(_ spans: [FfiSpan]) -> (TaskStatus?, String, [FfiSpan]) {
         guard case let .task(state, taskSource)? = spans.first, let status = TaskStatus(state: state) else {
             return (nil, "", spans)
@@ -142,30 +151,14 @@ public enum BlockPresentation {
             return [DisplayRun(display: text, source: text, style: .plain)]
         case let .code(text):
             return [DisplayRun(display: text, source: text, style: .code)]
-        case let .bold(text, _):
-            return [
-                DisplayRun(display: "**", source: "**", style: .bracket),
-                DisplayRun(display: text, source: text, style: .bold),
-                DisplayRun(display: "**", source: "**", style: .bracket),
-            ]
-        case let .italic(text, _):
-            return [
-                DisplayRun(display: "*", source: "*", style: .bracket),
-                DisplayRun(display: text, source: text, style: .italic),
-                DisplayRun(display: "*", source: "*", style: .bracket),
-            ]
-        case let .strike(text, _):
-            return [
-                DisplayRun(display: "~~", source: "~~", style: .bracket),
-                DisplayRun(display: text, source: text, style: .strike),
-                DisplayRun(display: "~~", source: "~~", style: .bracket),
-            ]
-        case let .highlight(text, _):
-            return [
-                DisplayRun(display: "==", source: "==", style: .bracket),
-                DisplayRun(display: text, source: text, style: .highlight),
-                DisplayRun(display: "==", source: "==", style: .bracket),
-            ]
+        case let .bold(text, source):
+            return hiddenMarkers(text: text, source: source, style: .bold)
+        case let .italic(text, source):
+            return hiddenMarkers(text: text, source: source, style: .italic)
+        case let .strike(text, source):
+            return hiddenMarkers(text: text, source: source, style: .strike)
+        case let .highlight(text, source):
+            return hiddenMarkers(text: text, source: source, style: .highlight)
         case let .externalLink(label, url, source):
             return [DisplayRun(display: label, source: source, style: .externalLink(url: url))]
         case let .task(_, source):

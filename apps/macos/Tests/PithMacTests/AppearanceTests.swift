@@ -106,6 +106,37 @@ final class AppearanceTests: XCTestCase {
         return value
     }
 
+    func testFormattingMarkersAreHiddenOutsideEditing() {
+        let runs = BlockPresentation.runs([
+            .text(text: "a "),
+            .bold(text: "system", source: "**system**"),
+            .text(text: " b "),
+            .italic(text: "why", source: "*why*"),
+        ]).runs
+        XCTAssertEqual(runs.map(\.display).joined(), "a system b why")
+        XCTAssertEqual(runs.map(\.source).joined(), "a **system** b *why*")
+        XCTAssertEqual(BlockPresentation.editUTF16Offset(forDisplayUTF16: 3, in: runs), 5)
+        XCTAssertEqual(BlockPresentation.editUTF16Offset(forDisplayUTF16: 8, in: runs), 10)
+        XCTAssertEqual(BlockPresentation.editUTF16Offset(forDisplayUTF16: 12, in: runs), 17)
+    }
+
+    func testBoldAndItalicRenderWithRealFaces() throws {
+        XCTAssertEqual(Typography.registerBundledFonts(), [])
+        let runs = BlockPresentation.runs([
+            .bold(text: "big", source: "**big**"),
+            .text(text: " "),
+            .italic(text: "slant", source: "*slant*"),
+        ]).runs
+        let shown = BlockStyle.display(runs, closed: false)
+        XCTAssertEqual(shown.string, "big slant")
+        let boldFont = shown.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        let italicFont = shown.attribute(.font, at: 5, effectiveRange: nil) as? NSFont
+        XCTAssertEqual(boldFont?.familyName, "Inter")
+        XCTAssertTrue(NSFontManager.shared.traits(of: try XCTUnwrap(boldFont)).contains(.boldFontMask))
+        XCTAssertEqual(italicFont?.familyName, "Inter")
+        XCTAssertTrue(NSFontManager.shared.traits(of: try XCTUnwrap(italicFont)).contains(.italicFontMask))
+    }
+
     func testColumnHelpers() {
         XCTAssertEqual(TextOffsets.column(ofScalar: 13, in: "abc\ndefghij\nxy"), 1)
         XCTAssertEqual(TextOffsets.offsetInLastLine(atColumn: 1, in: "abc\ndef"), 5)
