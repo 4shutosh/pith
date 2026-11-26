@@ -115,7 +115,7 @@ final class AppearanceTests: XCTestCase {
 
     func testRecentPagesAreNewestFirstAndCapped() {
         func page(_ title: String, _ updated: Int64) -> FfiPage {
-            FfiPage(id: title, title: title, journalDay: nil, documentMode: false, version: 1, updatedAt: updated)
+            FfiPage(id: title, title: title, journalDay: nil, documentMode: false, favorite: false, version: 1, updatedAt: updated)
         }
         let pages = [page("Old", 10), page("Newest", 30), page("Middle", 20)]
         XCTAssertEqual(OutlinerController.recent(pages, limit: 2).map(\.title), ["Newest", "Middle"])

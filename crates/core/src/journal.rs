@@ -1,4 +1,4 @@
-use chrono::{Datelike, Local};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 
 use crate::error::{Error, Result};
 
@@ -7,6 +7,30 @@ pub fn resolve_journal_date(date: Option<&str>) -> Result<(i32, String)> {
         Some(raw) => parse_iso_date(raw),
         None => Ok(today_local()),
     }
+}
+
+pub fn local_time_of_day() -> String {
+    Local::now().format("%H:%M").to_string()
+}
+
+pub fn shift_journal_date(date: Option<&str>, delta_days: i32) -> Result<String> {
+    let base = match date {
+        Some(raw) => {
+            let (day, _) = parse_iso_date(raw)?;
+            let y = day / 10_000;
+            let m = ((day / 100) % 100) as u32;
+            let d = (day % 100) as u32;
+            NaiveDate::from_ymd_opt(y, m, d).ok_or_else(|| Error::InvalidDate(raw.to_string()))?
+        }
+        None => Local::now().date_naive(),
+    };
+    let shifted = base + Duration::days(i64::from(delta_days));
+    Ok(format!(
+        "{:04}-{:02}-{:02}",
+        shifted.year(),
+        shifted.month(),
+        shifted.day()
+    ))
 }
 
 pub fn parse_iso_date(raw: &str) -> Result<(i32, String)> {

@@ -145,9 +145,17 @@ struct PithMacApp: App {
                     .keyboardShortcut("j", modifiers: .command)
                 Button("All pages") { controller.showAllPages() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
-                Button("Zoom Out") { controller.zoomOutOneLevel() }
+                Button("Back") { controller.goBack() }
                     .keyboardShortcut("[", modifiers: .command)
-                    .disabled(controller.zoomedBlockId == nil)
+                    .disabled(!controller.canGoBack && controller.zoomedBlockId == nil)
+                Button("Forward") { controller.goForward() }
+                    .keyboardShortcut("]", modifiers: .command)
+                    .disabled(!controller.canGoForward)
+                Divider()
+                Button("Previous Day") { controller.stepJournalDay(-1) }
+                    .keyboardShortcut("[", modifiers: [.command, .option])
+                Button("Next Day") { controller.stepJournalDay(1) }
+                    .keyboardShortcut("]", modifiers: [.command, .option])
                 Divider()
                 Button(showSidebar ? "Hide Sidebar" : "Show Sidebar") {
                     withAnimation(.easeOut(duration: 0.16)) {

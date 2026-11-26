@@ -290,6 +290,7 @@ fn a_version_1_database_migrates_and_supports_undo_groups() -> Result<()> {
         raw.execute_batch(
             "DROP INDEX idx_txns_actor_undo_group;
              ALTER TABLE txns DROP COLUMN undo_group;
+             ALTER TABLE pages DROP COLUMN favorite;
              PRAGMA user_version = 1;",
         )?;
         drop(raw);
@@ -473,6 +474,94 @@ fn bulk_cycle_tasks_and_markdown_export() -> Result<()> {
 
     f.store.undo_last(&user_meta("undo doing"), false)?;
     assert_eq!(f.texts()?, vec!["TODO First", "Child", "TODO Second"]);
+    Ok(())
+}
+
+#[test]
+fn inline_formatting_spans_toggle_slash_and_favorites() -> Result<()> {
+    let mut f = Fixture::new()?;
+    let (id, _) = f.block(
+        None,
+        None,
+        "Say **bold** *italic* ~~gone~~ ==mark== [docs](https://pith.app) and https://example.com.",
+    )?;
+    let row = f.store.block_row(id)?.context("row")?;
+    let joined: String = row.spans.iter().map(|s| s.source()).collect();
+    assert_eq!(joined, row.rendered_content);
+    assert!(row.spans.contains(&RenderedSpan::Bold {
+        text: "bold".to_string(),
+        source: "**bold**".to_string(),
+    }));
+    assert!(row.spans.contains(&RenderedSpan::Italic {
+        text: "italic".to_string(),
+        source: "*italic*".to_string(),
+    }));
+    assert!(row.spans.contains(&RenderedSpan::Strike {
+        text: "gone".to_string(),
+        source: "~~gone~~".to_string(),
+    }));
+    assert!(row.spans.contains(&RenderedSpan::Highlight {
+        text: "mark".to_string(),
+        source: "==mark==".to_string(),
+    }));
+    assert!(row.spans.contains(&RenderedSpan::ExternalLink {
+        label: "docs".to_string(),
+        url: "https://pith.app".to_string(),
+        source: "[docs](https://pith.app)".to_string(),
+    }));
+    assert!(row.spans.contains(&RenderedSpan::ExternalLink {
+        label: "https://example.com".to_string(),
+        url: "https://example.com".to_string(),
+        source: "https://example.com".to_string(),
+    }));
+
+    let (wrapped, s, e) = pith_core::parser::toggle_inline_format(
+        "hello world",
+        6,
+        11,
+        pith_core::parser::InlineFormat::Bold,
+    );
+    assert_eq!((wrapped.as_str(), s, e), ("hello **world**", 8, 13));
+    let (unwrapped, s2, e2) = pith_core::parser::toggle_inline_format(
+        &wrapped,
+        s,
+        e,
+        pith_core::parser::InlineFormat::Bold,
+    );
+    assert_eq!((unwrapped.as_str(), s2, e2), ("hello world", 6, 11));
+
+    let slash = pith_core::parser::completion_context("run /tod", 8).context("slash")?;
+    assert_eq!(slash.kind, pith_core::parser::CompletionKind::Slash);
+    assert_eq!(slash.query, "tod");
+    assert_eq!(
+        pith_core::parser::apply_completion("run /tod", &slash, "[[2026-11-26]]"),
+        ("run [[2026-11-26]]".to_string(), 18)
+    );
+
+    f.store.apply_ops(
+        &[Op::SetPageFavorite {
+            id: f.page,
+            favorite: true,
+        }],
+        &user_meta("favorite"),
+    )?;
+    assert!(f.store.get_page(f.page)?.context("page")?.favorite);
+
+    f.store
+        .start_journal(Some("2026-11-25"), &user_meta("j1"))?;
+    f.store
+        .start_journal(Some("2026-11-26"), &user_meta("j2"))?;
+    let journals: Vec<String> = f
+        .store
+        .list_journals(10)?
+        .into_iter()
+        .map(|p| p.title)
+        .collect();
+    assert_eq!(journals, vec!["2026-11-26", "2026-11-25"]);
+    assert_eq!(
+        pith_core::journal::shift_journal_date(Some("2026-11-26"), -1)?,
+        "2026-11-25"
+    );
     Ok(())
 }
 

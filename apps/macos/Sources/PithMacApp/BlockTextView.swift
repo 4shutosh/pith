@@ -31,6 +31,14 @@ final class PithTextView: NSTextView {
             onMoveBlock?(true, caret)
         case (125, [.option]), (125, [.option, .numericPad, .function]):
             onMoveBlock?(false, caret)
+        case (_, .command) where key == "b":
+            applyInlineFormat(.bold)
+        case (_, .command) where key == "i":
+            applyInlineFormat(.italic)
+        case (_, [.command, .shift]) where key == "x":
+            applyInlineFormat(.strike)
+        case (_, [.command, .shift]) where key == "h":
+            applyInlineFormat(.highlight)
         case (_, .command) where key == ".":
             onToggleCollapse?(caret)
         case (_, [.command, .shift]) where key == "c":
@@ -38,6 +46,18 @@ final class PithTextView: NSTextView {
         default:
             super.keyDown(with: event)
         }
+    }
+
+    private func applyInlineFormat(_ format: FfiInlineFormat) {
+        let selection = selectedRange()
+        let start = TextOffsets.scalar(fromUTF16: selection.location, in: string)
+        let end = TextOffsets.scalar(fromUTF16: selection.location + selection.length, in: string)
+        let edited = toggleInlineFormat(text: string, start: UInt32(start), end: UInt32(end), format: format)
+        textStorage?.setAttributedString(NSAttributedString(string: edited.text, attributes: BlockStyle.editingAttributes))
+        let newStart = TextOffsets.utf16(fromScalar: Int(edited.start), in: edited.text)
+        let newEnd = TextOffsets.utf16(fromScalar: Int(edited.end), in: edited.text)
+        setSelectedRange(NSRange(location: newStart, length: newEnd - newStart))
+        didChangeText()
     }
 
     override func paste(_ sender: Any?) {
@@ -82,6 +102,10 @@ final class PithTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         if let pageId = pageId(at: point) {
             onOpenPage?(pageId)
+            return
+        }
+        if let rawURL = externalURL(at: point), let url = URL(string: rawURL) {
+            NSWorkspace.shared.open(url)
             return
         }
         onActivate?(characterIndexForInsertion(at: point))
@@ -142,6 +166,14 @@ final class PithTextView: NSTextView {
     }
 
     private func pageId(at point: NSPoint) -> String? {
+        attribute(.pithPageId, at: point) as? String
+    }
+
+    private func externalURL(at point: NSPoint) -> String? {
+        attribute(.pithExternalURL, at: point) as? String
+    }
+
+    private func attribute(_ key: NSAttributedString.Key, at point: NSPoint) -> Any? {
         guard let layout = layoutManager, let container = textContainer, let storage = textStorage,
               storage.length > 0 else { return nil }
         let containerPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
@@ -150,7 +182,7 @@ final class PithTextView: NSTextView {
         guard glyphRect.contains(containerPoint) else { return nil }
         let index = layout.characterIndexForGlyph(at: glyph)
         guard index < storage.length else { return nil }
-        return storage.attribute(.pithPageId, at: index, effectiveRange: nil) as? String
+        return storage.attribute(key, at: index, effectiveRange: nil)
     }
 }
 

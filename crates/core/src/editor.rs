@@ -439,6 +439,36 @@ impl Store {
         Ok(lines.join("\n"))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_slash_command(
+        &mut self,
+        id: Id,
+        base_version: i64,
+        text: &str,
+        caret: usize,
+        command: parser::SlashCommand,
+        clock: &parser::SlashClock<'_>,
+        meta: &TxMeta,
+    ) -> Result<Option<EditOutcome>> {
+        let Some((content, cursor)) = parser::apply_slash_command(text, caret, command, clock)
+        else {
+            return Ok(None);
+        };
+        let result = self.apply_ops(
+            &[Op::UpdateBlock {
+                id,
+                content,
+                expected_version: Some(base_version),
+            }],
+            meta,
+        )?;
+        Ok(Some(EditOutcome {
+            result,
+            focus_block: id,
+            cursor: Some(cursor as u32),
+        }))
+    }
+
     pub fn blocks_markdown(&self, ids: &[Id]) -> Result<String> {
         let roots = self.selected_roots_in_order(ids)?;
         let mut lines = Vec::new();

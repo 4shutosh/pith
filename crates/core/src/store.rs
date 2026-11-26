@@ -126,7 +126,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT id, title, title_lower, journal_day, document_mode,
-                        created_at, updated_at, created_by, updated_by, deleted_at, version
+                        created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
                  FROM pages WHERE journal_day = ?1 AND deleted_at IS NULL",
                 params![journal_day],
                 row_to_page,
@@ -206,7 +206,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT id, title, title_lower, journal_day, document_mode,
-                        created_at, updated_at, created_by, updated_by, deleted_at, version
+                        created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
                  FROM pages WHERE id = ?1",
                 params![id.as_bytes().as_slice()],
                 row_to_page,
@@ -220,7 +220,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT id, title, title_lower, journal_day, document_mode,
-                        created_at, updated_at, created_by, updated_by, deleted_at, version
+                        created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
                  FROM pages WHERE title_lower = ?1 AND deleted_at IS NULL",
                 params![lower],
                 row_to_page,
@@ -232,10 +232,27 @@ impl Store {
     pub fn list_live_pages(&self) -> Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, title_lower, journal_day, document_mode,
-                    created_at, updated_at, created_by, updated_by, deleted_at, version
+                    created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
              FROM pages WHERE deleted_at IS NULL ORDER BY title_lower, id",
         )?;
         let rows = stmt.query_map([], row_to_page)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_journals(&self, limit: usize) -> Result<Vec<Page>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, title_lower, journal_day, document_mode,
+                    created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
+             FROM pages
+             WHERE deleted_at IS NULL AND journal_day IS NOT NULL
+             ORDER BY journal_day DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], row_to_page)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -641,7 +658,7 @@ impl Store {
         let upper = format!("{lower}\u{10FFFF}");
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, title, title_lower, journal_day, document_mode,
-                    created_at, updated_at, created_by, updated_by, deleted_at, version
+                    created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
              FROM pages
              WHERE deleted_at IS NULL AND title_lower >= ?1 AND title_lower <= ?2
              ORDER BY title_lower LIMIT ?3",
@@ -1574,6 +1591,20 @@ fn apply_single_op(tx: &Transaction<'_>, op: &Op, meta: &TxMeta, now: i64) -> Re
                 touched: Vec::new(),
             })
         }
+
+        Op::SetPageFavorite { id, favorite } => {
+            require_live_page(tx, *id)?;
+            tx.execute(
+                "UPDATE pages SET favorite = ?1 WHERE id = ?2",
+                params![i64::from(*favorite), id.as_bytes().as_slice()],
+            )?;
+
+            Ok(AppliedOp {
+                forward: op.clone(),
+                inverse: Vec::new(),
+                touched: Vec::new(),
+            })
+        }
     }
 }
 
@@ -1730,7 +1761,7 @@ fn verify_invariants_conn(conn: &Connection) -> Result<()> {
 fn fetch_page(tx: &Transaction<'_>, id: Id) -> Result<Option<Page>> {
     tx.query_row(
         "SELECT id, title, title_lower, journal_day, document_mode,
-                created_at, updated_at, created_by, updated_by, deleted_at, version
+                created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
          FROM pages WHERE id = ?1",
         params![id.as_bytes().as_slice()],
         row_to_page,
@@ -1933,12 +1964,14 @@ fn row_to_page(row: &Row<'_>) -> rusqlite::Result<Page> {
     let id_bytes: Vec<u8> = row.get(0)?;
     let id = Id::from_slice(&id_bytes).ok_or(rusqlite::Error::InvalidQuery)?;
     let document_mode: i64 = row.get(4)?;
+    let favorite: i64 = row.get(11)?;
     Ok(Page {
         id,
         title: row.get(1)?,
         title_lower: row.get(2)?,
         journal_day: row.get(3)?,
         document_mode: document_mode != 0,
+        favorite: favorite != 0,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
         created_by: row.get(7)?,

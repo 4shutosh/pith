@@ -174,6 +174,37 @@ struct TaskMark: View {
     }
 }
 
+struct StarIcon: View {
+    let filled: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            let cx = size.width / 2
+            let cy = size.height / 2 + 0.5
+            let outer = size.width * 0.44
+            let inner = outer * 0.44
+            var path = Path()
+            for i in 0..<10 {
+                let angle = (Double(i) * .pi / 5) - .pi / 2
+                let r = i.isMultiple(of: 2) ? outer : inner
+                let pt = CGPoint(x: cx + CGFloat(cos(angle)) * r, y: cy + CGFloat(sin(angle)) * r)
+                if i == 0 {
+                    path.move(to: pt)
+                } else {
+                    path.addLine(to: pt)
+                }
+            }
+            path.closeSubpath()
+            if filled {
+                context.fill(path, with: .foreground)
+            } else {
+                context.stroke(path, with: .foreground, style: StrokeStyle(lineWidth: 1.2, lineJoin: .round))
+            }
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
 struct SunIcon: View {
     var body: some View {
         Canvas { context, size in

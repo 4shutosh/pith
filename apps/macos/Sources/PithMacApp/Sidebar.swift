@@ -26,16 +26,46 @@ struct Sidebar: View {
                 }
             }
 
-            if !controller.recentPages.isEmpty {
-                SectionLabel(title: "Recent")
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 2) {
-                        ForEach(controller.recentPages, id: \.id) { page in
-                            SidebarPageItem(
-                                title: page.title,
-                                isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
-                            ) {
-                                controller.selectPage(page.id)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if !controller.favoritePages.isEmpty {
+                        SectionLabel(title: "Favorites")
+                        VStack(spacing: 2) {
+                            ForEach(controller.favoritePages, id: \.id) { page in
+                                SidebarPageItem(
+                                    title: page.title,
+                                    isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
+                                ) {
+                                    controller.selectPage(page.id)
+                                }
+                            }
+                        }
+                    }
+
+                    if !controller.journals.isEmpty {
+                        SectionLabel(title: "Journals")
+                        VStack(spacing: 2) {
+                            ForEach(controller.journals.prefix(7), id: \.id) { page in
+                                SidebarPageItem(
+                                    title: page.title,
+                                    isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
+                                ) {
+                                    controller.selectPage(page.id)
+                                }
+                            }
+                        }
+                    }
+
+                    if !controller.recentPages.isEmpty {
+                        SectionLabel(title: "Recent")
+                        VStack(spacing: 2) {
+                            ForEach(controller.recentPages, id: \.id) { page in
+                                SidebarPageItem(
+                                    title: page.title,
+                                    isSelected: !controller.isShowingAllPages && controller.selectedPageId == page.id
+                                ) {
+                                    controller.selectPage(page.id)
+                                }
                             }
                         }
                     }

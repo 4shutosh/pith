@@ -30,7 +30,7 @@ For notes on prior art, see [research/logseq-db.md](research/logseq-db.md).
 ```sql
 -- content
 pages  (seq INTEGER PRIMARY KEY, id BLOB UNIQUE, title TEXT, title_lower TEXT, journal_day INTEGER NULL,
-        document_mode INTEGER DEFAULT 0,
+        document_mode INTEGER DEFAULT 0, favorite INTEGER DEFAULT 0,
         created_at, updated_at, created_by, updated_by, deleted_at NULL, version INTEGER)
   UNIQUE INDEX (title_lower) WHERE deleted_at IS NULL   -- a soft-deleted title can be reused
   UNIQUE INDEX (journal_day) WHERE deleted_at IS NULL   -- one journal page per day
@@ -108,7 +108,7 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
 - **Helpers that compile to content ops:**
   - property set/remove and task-state toggles rewrite the block's text through `update_block` (D2)
   - indent, outdent and move up/down become `move_block`
-- **View-state op** `set_collapsed`: persisted and synced, but it does not bump `version` and is not recorded for undo.
+- **View-state ops** `set_collapsed` and `set_page_favorite`: persisted and synced, but they do not bump `version` and are not recorded for undo.
 
 **Undo** applies the `inverse` ops of txn T as a new txn with `origin=undo, undoes=T`. Its checks and its write run in one `BEGIN IMMEDIATE` transaction, so two processes can't both undo T. Only undo can create `origin=undo` txns; `apply_ops` rejects that origin from callers.
 
@@ -125,7 +125,7 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
 
 Saves during one editing session share an `undo_group`, so a typing burst is one undo step.
 
-**Editor commands live in the core.** Split, merge, indent, outdent, move up/down, paste, append, reveal and copy-as-Markdown, and their multi-block forms over a selection (one page, one transaction, one undo step), compile to canonical ops (or reads) using the full tree, never the rows a UI happens to have loaded. Autocomplete (`[[`, `#`, `((`) detection and insertion, and bracket auto-pairing, are core functions too.
+**Editor commands live in the core.** Split, merge, indent, outdent, move up/down, paste, append, reveal and copy-as-Markdown, and their multi-block forms over a selection (one page, one transaction, one undo step), compile to canonical ops (or reads) using the full tree, never the rows a UI happens to have loaded. Autocomplete (`[[`, `#`, `((`, `/`) detection and insertion, the slash command list and what each command does, inline formatting (parsing `**`, `*`, `~~`, `==`, Markdown links and bare URLs into spans, and toggling a format over a selection), and bracket auto-pairing are core functions too.
 
 **Saving keeps link identity.** When text that came from a block is saved (edit, split, merge), titles the block already linked resolve to the same page ids, including deleted pages, so editing never mints a duplicate page and a deleted page stays restorable. Only titles new to the text are looked up among live pages (and created if missing). Edits carry the version the editor started from, so a change made elsewhere surfaces as a conflict instead of being overwritten. A journal page is created together with its first block, so opening the app writes nothing.
 

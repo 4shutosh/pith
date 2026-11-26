@@ -76,18 +76,48 @@ pub fn render_spans(
         match span {
             Span::Text(text) => {
                 let leading = text.len() - text.trim_start().len();
-                match task.filter(|t| text[leading..].starts_with(t.as_str())) {
+                let remainder = match task.filter(|t| text[leading..].starts_with(t.as_str())) {
                     Some(state) => {
                         let keyword_end = leading + state.len();
                         out.push(RenderedSpan::Task {
                             source: text[..keyword_end].to_string(),
                             state,
                         });
-                        if keyword_end < text.len() {
-                            out.push(RenderedSpan::Text(text[keyword_end..].to_string()));
-                        }
+                        &text[keyword_end..]
                     }
-                    None => out.push(RenderedSpan::Text(text.to_string())),
+                    None => text,
+                };
+                if !remainder.is_empty() {
+                    for inline in parser::tokenize_inline(remainder) {
+                        out.push(match inline {
+                            parser::InlineToken::Text(t) => RenderedSpan::Text(t.to_string()),
+                            parser::InlineToken::Bold { inner, raw } => RenderedSpan::Bold {
+                                text: inner.to_string(),
+                                source: raw.to_string(),
+                            },
+                            parser::InlineToken::Italic { inner, raw } => RenderedSpan::Italic {
+                                text: inner.to_string(),
+                                source: raw.to_string(),
+                            },
+                            parser::InlineToken::Strike { inner, raw } => RenderedSpan::Strike {
+                                text: inner.to_string(),
+                                source: raw.to_string(),
+                            },
+                            parser::InlineToken::Highlight { inner, raw } => {
+                                RenderedSpan::Highlight {
+                                    text: inner.to_string(),
+                                    source: raw.to_string(),
+                                }
+                            }
+                            parser::InlineToken::ExternalLink { label, url, raw } => {
+                                RenderedSpan::ExternalLink {
+                                    label: label.to_string(),
+                                    url: url.to_string(),
+                                    source: raw.to_string(),
+                                }
+                            }
+                        });
+                    }
                 }
             }
             Span::Code(code) => out.push(RenderedSpan::Code(code.to_string())),

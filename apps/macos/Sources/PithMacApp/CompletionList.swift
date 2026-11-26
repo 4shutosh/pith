@@ -60,6 +60,10 @@ struct CompletionList: View {
                     .foregroundColor(selected ? Theme.tag : Theme.textTertiary)
             case .block:
                 Circle().stroke(color, lineWidth: 1.2).frame(width: 5.5, height: 5.5)
+            case .slash:
+                Text("/")
+                    .font(Typography.ui(12, .medium))
+                    .foregroundColor(color)
             }
         }
     }

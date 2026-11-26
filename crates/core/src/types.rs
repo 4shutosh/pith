@@ -75,6 +75,7 @@ pub struct Page {
     pub title_lower: String,
     pub journal_day: Option<i32>,
     pub document_mode: bool,
+    pub favorite: bool,
     pub created_at: i64,
     pub updated_at: i64,
     pub created_by: String,
@@ -157,6 +158,27 @@ pub struct Backlink {
 pub enum RenderedSpan {
     Text(String),
     Code(String),
+    Bold {
+        text: String,
+        source: String,
+    },
+    Italic {
+        text: String,
+        source: String,
+    },
+    Strike {
+        text: String,
+        source: String,
+    },
+    Highlight {
+        text: String,
+        source: String,
+    },
+    ExternalLink {
+        label: String,
+        url: String,
+        source: String,
+    },
     Task {
         state: String,
         source: String,
@@ -182,7 +204,12 @@ impl RenderedSpan {
     pub fn source(&self) -> &str {
         match self {
             Self::Text(text) | Self::Code(text) => text,
-            Self::Task { source, .. }
+            Self::Bold { source, .. }
+            | Self::Italic { source, .. }
+            | Self::Strike { source, .. }
+            | Self::Highlight { source, .. }
+            | Self::ExternalLink { source, .. }
+            | Self::Task { source, .. }
             | Self::PageLink { source, .. }
             | Self::Tag { source, .. }
             | Self::BlockRef { source, .. } => source,

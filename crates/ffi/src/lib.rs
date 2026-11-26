@@ -1,7 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use pith_core::journal::resolve_journal_date;
-use pith_core::parser::{self, CompletionContext, CompletionKind, HighlightKind, highlight_ranges};
+use pith_core::journal::{local_time_of_day, resolve_journal_date, shift_journal_date};
+use pith_core::parser::{
+    self, CompletionContext, CompletionKind, HighlightKind, InlineFormat, SlashClock, SlashCommand,
+    highlight_ranges,
+};
 use pith_core::snippet::Segment;
 use pith_core::{
     ApplyResult, Backlink, ChangeEntry, ChangeFeed, EditOutcome, Error, FlatBlockRow, Id, Op,
@@ -97,6 +100,7 @@ pub struct FfiPage {
     pub title: String,
     pub journal_day: Option<i32>,
     pub document_mode: bool,
+    pub favorite: bool,
     pub version: i64,
     pub updated_at: i64,
 }
@@ -108,6 +112,7 @@ impl From<Page> for FfiPage {
             title: page.title,
             journal_day: page.journal_day,
             document_mode: page.document_mode,
+            favorite: page.favorite,
             version: page.version,
             updated_at: page.updated_at,
         }
@@ -216,6 +221,10 @@ pub enum FfiOp {
         id: String,
         collapsed: bool,
     },
+    SetPageFavorite {
+        id: String,
+        favorite: bool,
+    },
 }
 
 impl TryFrom<FfiOp> for Op {
@@ -297,6 +306,10 @@ impl TryFrom<FfiOp> for Op {
             FfiOp::SetCollapsed { id, collapsed } => Self::SetCollapsed {
                 id: parse_id(&id)?,
                 collapsed,
+            },
+            FfiOp::SetPageFavorite { id, favorite } => Self::SetPageFavorite {
+                id: parse_id(&id)?,
+                favorite,
             },
         })
     }
@@ -425,6 +438,27 @@ pub enum FfiSpan {
     Code {
         text: String,
     },
+    Bold {
+        text: String,
+        source: String,
+    },
+    Italic {
+        text: String,
+        source: String,
+    },
+    Strike {
+        text: String,
+        source: String,
+    },
+    Highlight {
+        text: String,
+        source: String,
+    },
+    ExternalLink {
+        label: String,
+        url: String,
+        source: String,
+    },
     Task {
         state: String,
         source: String,
@@ -451,6 +485,13 @@ impl From<RenderedSpan> for FfiSpan {
         match span {
             RenderedSpan::Text(text) => Self::Text { text },
             RenderedSpan::Code(text) => Self::Code { text },
+            RenderedSpan::Bold { text, source } => Self::Bold { text, source },
+            RenderedSpan::Italic { text, source } => Self::Italic { text, source },
+            RenderedSpan::Strike { text, source } => Self::Strike { text, source },
+            RenderedSpan::Highlight { text, source } => Self::Highlight { text, source },
+            RenderedSpan::ExternalLink { label, url, source } => {
+                Self::ExternalLink { label, url, source }
+            }
             RenderedSpan::Task { state, source } => Self::Task { state, source },
             RenderedSpan::PageLink {
                 page_id,
@@ -713,6 +754,15 @@ impl PithGraph {
             .collect())
     }
 
+    pub fn list_journals(&self, limit: u32) -> Result<Vec<FfiPage>, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .list_journals(limit as usize)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     pub fn paste_text(
         &self,
         block_id: String,
@@ -740,6 +790,31 @@ impl PithGraph {
         let block_id = parse_id(&block_id)?;
         let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
         Ok(store.subtree_markdown(block_id)?)
+    }
+
+    pub fn run_slash_command(
+        &self,
+        block_id: String,
+        base_version: i64,
+        text: String,
+        caret: u32,
+        command: FfiSlashCommand,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiEditOutcome>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let clock = LocalClock::now()?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .run_slash_command(
+                block_id,
+                base_version,
+                &text,
+                caret as usize,
+                command.into(),
+                &clock.borrow(),
+                &meta.into(),
+            )?
+            .map(Into::into))
     }
 
     pub fn blocks_markdown(&self, block_ids: Vec<String>) -> Result<String, FfiError> {
@@ -956,6 +1031,37 @@ pub enum FfiHighlightKind {
     Tag,
     Code,
     BlockRef,
+    Bold,
+    Italic,
+    Strike,
+    Highlight,
+    ExternalLink,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiInlineFormat {
+    Bold,
+    Italic,
+    Strike,
+    Highlight,
+}
+
+impl From<FfiInlineFormat> for InlineFormat {
+    fn from(format: FfiInlineFormat) -> Self {
+        match format {
+            FfiInlineFormat::Bold => Self::Bold,
+            FfiInlineFormat::Italic => Self::Italic,
+            FfiInlineFormat::Strike => Self::Strike,
+            FfiInlineFormat::Highlight => Self::Highlight,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiRangeEdit {
+    pub text: String,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -978,9 +1084,30 @@ pub fn highlight(text: String) -> Vec<FfiHighlight> {
                 HighlightKind::Tag => FfiHighlightKind::Tag,
                 HighlightKind::Code => FfiHighlightKind::Code,
                 HighlightKind::BlockRef => FfiHighlightKind::BlockRef,
+                HighlightKind::Bold => FfiHighlightKind::Bold,
+                HighlightKind::Italic => FfiHighlightKind::Italic,
+                HighlightKind::Strike => FfiHighlightKind::Strike,
+                HighlightKind::Highlight => FfiHighlightKind::Highlight,
+                HighlightKind::ExternalLink => FfiHighlightKind::ExternalLink,
             },
         })
         .collect()
+}
+
+#[uniffi::export]
+pub fn toggle_inline_format(
+    text: String,
+    start: u32,
+    end: u32,
+    format: FfiInlineFormat,
+) -> FfiRangeEdit {
+    let (text, start, end) =
+        parser::toggle_inline_format(&text, start as usize, end as usize, format.into());
+    FfiRangeEdit {
+        text,
+        start: start as u32,
+        end: end as u32,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -994,6 +1121,7 @@ pub enum FfiCompletionKind {
     Page,
     Tag,
     Block,
+    Slash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -1017,6 +1145,7 @@ impl From<CompletionContext> for FfiCompletionContext {
                 CompletionKind::Page => FfiCompletionKind::Page,
                 CompletionKind::Tag => FfiCompletionKind::Tag,
                 CompletionKind::Block => FfiCompletionKind::Block,
+                CompletionKind::Slash => FfiCompletionKind::Slash,
             },
             query: c.query,
             start: c.start as u32,
@@ -1032,6 +1161,7 @@ impl From<FfiCompletionContext> for CompletionContext {
                 FfiCompletionKind::Page => CompletionKind::Page,
                 FfiCompletionKind::Tag => CompletionKind::Tag,
                 FfiCompletionKind::Block => CompletionKind::Block,
+                FfiCompletionKind::Slash => CompletionKind::Slash,
             },
             query: c.query,
             start: c.start as usize,
@@ -1062,6 +1192,100 @@ pub fn auto_pair(text: String, caret: u32) -> Option<String> {
 #[uniffi::export]
 pub fn journal_title(date: Option<String>) -> Result<String, FfiError> {
     Ok(resolve_journal_date(date.as_deref())?.1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum FfiSlashCommand {
+    Todo,
+    Doing,
+    Done,
+    Today,
+    Tomorrow,
+    Yesterday,
+    CurrentTime,
+    CodeBlock,
+}
+
+impl From<SlashCommand> for FfiSlashCommand {
+    fn from(command: SlashCommand) -> Self {
+        match command {
+            SlashCommand::Todo => Self::Todo,
+            SlashCommand::Doing => Self::Doing,
+            SlashCommand::Done => Self::Done,
+            SlashCommand::Today => Self::Today,
+            SlashCommand::Tomorrow => Self::Tomorrow,
+            SlashCommand::Yesterday => Self::Yesterday,
+            SlashCommand::CurrentTime => Self::CurrentTime,
+            SlashCommand::CodeBlock => Self::CodeBlock,
+        }
+    }
+}
+
+impl From<FfiSlashCommand> for SlashCommand {
+    fn from(command: FfiSlashCommand) -> Self {
+        match command {
+            FfiSlashCommand::Todo => Self::Todo,
+            FfiSlashCommand::Doing => Self::Doing,
+            FfiSlashCommand::Done => Self::Done,
+            FfiSlashCommand::Today => Self::Today,
+            FfiSlashCommand::Tomorrow => Self::Tomorrow,
+            FfiSlashCommand::Yesterday => Self::Yesterday,
+            FfiSlashCommand::CurrentTime => Self::CurrentTime,
+            FfiSlashCommand::CodeBlock => Self::CodeBlock,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiSlashItem {
+    pub command: FfiSlashCommand,
+    pub label: String,
+    pub detail: Option<String>,
+}
+
+struct LocalClock {
+    today: String,
+    tomorrow: String,
+    yesterday: String,
+    time: String,
+}
+
+impl LocalClock {
+    fn now() -> Result<Self, FfiError> {
+        Ok(Self {
+            today: resolve_journal_date(None)?.1,
+            tomorrow: shift_journal_date(None, 1)?,
+            yesterday: shift_journal_date(None, -1)?,
+            time: local_time_of_day(),
+        })
+    }
+
+    fn borrow(&self) -> SlashClock<'_> {
+        SlashClock {
+            today: &self.today,
+            tomorrow: &self.tomorrow,
+            yesterday: &self.yesterday,
+            time: &self.time,
+        }
+    }
+}
+
+#[uniffi::export]
+pub fn slash_commands(query: String) -> Result<Vec<FfiSlashItem>, FfiError> {
+    let clock = LocalClock::now()?;
+    Ok(parser::slash_commands(&query)
+        .into_iter()
+        .map(|command| FfiSlashItem {
+            command: command.into(),
+            label: command.label().to_string(),
+            detail: parser::slash_preview(command, &clock.borrow()),
+        })
+        .collect())
+}
+
+#[uniffi::export]
+pub fn shift_journal_day(date: Option<String>, delta_days: i32) -> Result<String, FfiError> {
+    Ok(shift_journal_date(date.as_deref(), delta_days)?)
 }
 
 #[uniffi::export]

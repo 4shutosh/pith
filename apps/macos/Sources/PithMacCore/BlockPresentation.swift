@@ -39,6 +39,11 @@ public enum RunStyle: Equatable {
     case plain
     case code
     case bracket
+    case bold
+    case italic
+    case strike
+    case highlight
+    case externalLink(url: String)
     case link(pageId: String?)
     case tag(pageId: String?)
     case blockRef
@@ -118,7 +123,12 @@ public enum BlockPresentation {
         switch span {
         case let .text(text), let .code(text):
             return text
-        case let .task(_, source),
+        case let .bold(_, source),
+             let .italic(_, source),
+             let .strike(_, source),
+             let .highlight(_, source),
+             let .externalLink(_, _, source),
+             let .task(_, source),
              let .pageLink(_, _, source),
              let .tag(_, _, source),
              let .blockRef(_, _, source):
@@ -132,6 +142,32 @@ public enum BlockPresentation {
             return [DisplayRun(display: text, source: text, style: .plain)]
         case let .code(text):
             return [DisplayRun(display: text, source: text, style: .code)]
+        case let .bold(text, _):
+            return [
+                DisplayRun(display: "**", source: "**", style: .bracket),
+                DisplayRun(display: text, source: text, style: .bold),
+                DisplayRun(display: "**", source: "**", style: .bracket),
+            ]
+        case let .italic(text, _):
+            return [
+                DisplayRun(display: "*", source: "*", style: .bracket),
+                DisplayRun(display: text, source: text, style: .italic),
+                DisplayRun(display: "*", source: "*", style: .bracket),
+            ]
+        case let .strike(text, _):
+            return [
+                DisplayRun(display: "~~", source: "~~", style: .bracket),
+                DisplayRun(display: text, source: text, style: .strike),
+                DisplayRun(display: "~~", source: "~~", style: .bracket),
+            ]
+        case let .highlight(text, _):
+            return [
+                DisplayRun(display: "==", source: "==", style: .bracket),
+                DisplayRun(display: text, source: text, style: .highlight),
+                DisplayRun(display: "==", source: "==", style: .bracket),
+            ]
+        case let .externalLink(label, url, source):
+            return [DisplayRun(display: label, source: source, style: .externalLink(url: url))]
         case let .task(_, source):
             return [DisplayRun(display: source, source: source, style: .plain)]
         case let .pageLink(pageId, title, source):

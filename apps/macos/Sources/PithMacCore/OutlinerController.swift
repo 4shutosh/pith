@@ -2,9 +2,16 @@ import Foundation
 import os
 import PithCore
 
+public enum NavTarget: Equatable {
+    case page(id: String, zoomedBlockId: String?)
+    case pendingJournal(title: String)
+    case allPages
+}
+
 @MainActor
 public final class OutlinerController: ObservableObject {
     @Published public var pages: [FfiPage] = []
+    @Published public var journals: [FfiPage] = []
     @Published public var selectedPageId: String?
     @Published public var pendingJournalTitle: String?
     @Published public var rows: [FfiFlatBlockRow] = []
@@ -22,6 +29,8 @@ public final class OutlinerController: ObservableObject {
     @Published public var breadcrumb: [FfiCrumb] = []
     @Published public var completion: CompletionState?
     @Published public var errorMessage: String?
+    @Published public var canGoBack: Bool = false
+    @Published public var canGoForward: Bool = false
 
     public let graph: PithGraph
     public let actor: String
@@ -34,6 +43,9 @@ public final class OutlinerController: ObservableObject {
     private var editPrefix: String = ""
     private var selectionAnchorId: String?
     private var selectionFocusId: String?
+    private var backStack: [NavTarget] = []
+    private var forwardStack: [NavTarget] = []
+    private var isRestoringHistory: Bool = false
     private var undoGroup: String = newId()
     private var lastDataVersion: Int64 = 0
     private var isComposingIME: Bool = false
@@ -50,15 +62,40 @@ public final class OutlinerController: ObservableObject {
         try showTodayJournal()
     }
 
+    public var currentPage: FfiPage? {
+        guard let id = selectedPageId else { return nil }
+        return pages.first(where: { $0.id == id })
+    }
+
     public var pageTitle: String? {
-        if let id = selectedPageId {
-            return pages.first(where: { $0.id == id })?.title
+        if let page = currentPage {
+            return page.title
         }
         return pendingJournalTitle
     }
 
     public var isShowingToday: Bool {
         !isShowingAllPages && pageTitle == todayTitle
+    }
+
+    public var isShowingJournal: Bool {
+        !isShowingAllPages && (pendingJournalTitle != nil || currentPage?.journalDay != nil)
+    }
+
+    public var currentJournalDate: String? {
+        if let pending = pendingJournalTitle { return pending }
+        if let page = currentPage, page.journalDay != nil { return page.title }
+        return nil
+    }
+
+    public var favoritePages: [FfiPage] {
+        pages
+            .filter(\.favorite)
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    public var hasMoreRows: Bool {
+        UInt64(rows.count) < totalVisible
     }
 
     public var recentPages: [FfiPage] {
@@ -76,6 +113,7 @@ public final class OutlinerController: ObservableObject {
     public func reload() {
         do {
             pages = try graph.listPages()
+            journals = try graph.listJournals(limit: 30)
             guard let pageId = selectedPageId else {
                 rows = []
                 totalVisible = 0
@@ -85,11 +123,12 @@ public final class OutlinerController: ObservableObject {
                 return
             }
             let window: FfiPageWindow
+            let limit = max(pageWindowLimit, UInt64(rows.count))
             if let zoomed = zoomedBlockId {
-                window = try graph.readBlockWindow(blockId: zoomed, offset: 0, limit: pageWindowLimit)
+                window = try graph.readBlockWindow(blockId: zoomed, offset: 0, limit: limit)
                 breadcrumb = try graph.blockBreadcrumb(blockId: zoomed)
             } else {
-                window = try graph.readPageWindow(pageId: pageId, offset: windowOffset, limit: pageWindowLimit)
+                window = try graph.readPageWindow(pageId: pageId, offset: windowOffset, limit: limit)
                 breadcrumb = []
             }
             rows = window.rows
@@ -112,7 +151,25 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
+    public func loadMoreRows() {
+        guard hasMoreRows, let pageId = selectedPageId else { return }
+        let interval = signposter.beginInterval("loadMore")
+        defer { signposter.endInterval("loadMore", interval) }
+        run {
+            let nextOffset = windowOffset + UInt64(rows.count)
+            let window = if let zoomed = zoomedBlockId {
+                try graph.readBlockWindow(blockId: zoomed, offset: nextOffset, limit: pageWindowLimit)
+            } else {
+                try graph.readPageWindow(pageId: pageId, offset: nextOffset, limit: pageWindowLimit)
+            }
+            let existing = Set(rows.map(\.id))
+            rows.append(contentsOf: window.rows.filter { !existing.contains($0.id) })
+            totalVisible = window.totalVisible
+        }
+    }
+
     public func selectPage(_ pageId: String) {
+        pushHistoryIfNeeded(for: .page(id: pageId, zoomedBlockId: nil))
         clearSelection()
         leaveBlock()
         isShowingAllPages = false
@@ -120,27 +177,181 @@ public final class OutlinerController: ObservableObject {
         windowOffset = 0
         pendingJournalTitle = nil
         selectedPageId = pageId
+        rows = []
         reload()
     }
 
     public func openTodayJournal() {
+        openJournal(date: todayTitle)
+    }
+
+    public func openJournal(date: String) {
+        let target: NavTarget = if let existing = try? graph.journalPage(date: date) {
+            .page(id: existing.id, zoomedBlockId: nil)
+        } else {
+            .pendingJournal(title: date)
+        }
+        pushHistoryIfNeeded(for: target)
         clearSelection()
         leaveBlock()
         isShowingAllPages = false
         zoomedBlockId = nil
         windowOffset = 0
+        rows = []
         do {
-            try showTodayJournal()
+            if let journal = try graph.journalPage(date: date) {
+                pendingJournalTitle = nil
+                selectedPageId = journal.id
+            } else {
+                selectedPageId = nil
+                pendingJournalTitle = try journalTitle(date: date)
+            }
+            reload()
         } catch {
             report(error)
         }
     }
 
+    public func stepJournalDay(_ delta: Int) {
+        let base = currentJournalDate ?? todayTitle
+        run {
+            let target = try shiftJournalDay(date: base, deltaDays: Int32(delta))
+            openJournal(date: target)
+        }
+    }
+
     public func showAllPages() {
+        pushHistoryIfNeeded(for: .allPages)
         clearSelection()
         leaveBlock()
         isShowingAllPages = true
-        run { pages = try graph.listPages() }
+        run {
+            pages = try graph.listPages()
+            journals = try graph.listJournals(limit: 30)
+        }
+    }
+
+    public func renameCurrentPage(to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let page = currentPage, page.journalDay == nil, trimmed != page.title else { return }
+        flushDraft()
+        run {
+            _ = try graph.applyOps(
+                ops: [.renamePage(id: page.id, title: trimmed, expectedVersion: page.version)],
+                meta: meta("rename page")
+            )
+            reload()
+        }
+    }
+
+    public func deleteCurrentPage() {
+        guard let page = currentPage else { return }
+        clearSelection()
+        leaveBlock()
+        run {
+            _ = try graph.applyOps(
+                ops: [.deletePage(id: page.id, expectedVersion: page.version)],
+                meta: meta("delete page")
+            )
+            backStack.removeAll { if case let .page(id, _) = $0 { return id == page.id } else { return false } }
+            forwardStack.removeAll { if case let .page(id, _) = $0 { return id == page.id } else { return false } }
+            syncHistoryFlags()
+            if canGoBack {
+                goBack()
+            } else {
+                isRestoringHistory = true
+                openTodayJournal()
+                isRestoringHistory = false
+            }
+        }
+    }
+
+    public func toggleFavorite(_ pageId: String) {
+        guard let page = pages.first(where: { $0.id == pageId }) else { return }
+        run {
+            _ = try graph.applyOps(
+                ops: [.setPageFavorite(id: page.id, favorite: !page.favorite)],
+                meta: meta(page.favorite ? "unfavorite page" : "favorite page")
+            )
+            reload()
+        }
+    }
+
+    public func goBack() {
+        if let previous = backStack.popLast() {
+            if let current = currentNavTarget() {
+                forwardStack.append(current)
+            }
+            syncHistoryFlags()
+            navigate(to: previous)
+        } else if zoomedBlockId != nil {
+            zoomOutOneLevel()
+        }
+    }
+
+    public func goForward() {
+        guard let next = forwardStack.popLast() else { return }
+        if let current = currentNavTarget() {
+            backStack.append(current)
+        }
+        syncHistoryFlags()
+        navigate(to: next)
+    }
+
+    private func currentNavTarget() -> NavTarget? {
+        if isShowingAllPages { return .allPages }
+        if let id = selectedPageId { return .page(id: id, zoomedBlockId: zoomedBlockId) }
+        if let title = pendingJournalTitle { return .pendingJournal(title: title) }
+        return nil
+    }
+
+    private func pushHistoryIfNeeded(for next: NavTarget) {
+        guard !isRestoringHistory, let current = currentNavTarget(), current != next else { return }
+        backStack.append(current)
+        if backStack.count > 100 {
+            backStack.removeFirst(backStack.count - 100)
+        }
+        forwardStack.removeAll()
+        syncHistoryFlags()
+    }
+
+    private func syncHistoryFlags() {
+        canGoBack = !backStack.isEmpty
+        canGoForward = !forwardStack.isEmpty
+    }
+
+    private func navigate(to target: NavTarget) {
+        isRestoringHistory = true
+        defer { isRestoringHistory = false }
+        clearSelection()
+        leaveBlock()
+        windowOffset = 0
+        rows = []
+        switch target {
+        case .allPages:
+            isShowingAllPages = true
+            run {
+                pages = try graph.listPages()
+                journals = try graph.listJournals(limit: 30)
+            }
+        case let .pendingJournal(title):
+            isShowingAllPages = false
+            zoomedBlockId = nil
+            if let existing = try? graph.journalPage(date: title) {
+                selectedPageId = existing.id
+                pendingJournalTitle = nil
+            } else {
+                selectedPageId = nil
+                pendingJournalTitle = title
+            }
+            reload()
+        case let .page(id, zoomed):
+            isShowingAllPages = false
+            pendingJournalTitle = nil
+            selectedPageId = id
+            zoomedBlockId = zoomed
+            reload()
+        }
     }
 
     public func openPage(id: String) {
@@ -346,8 +557,9 @@ public final class OutlinerController: ObservableObject {
             if let pageId = selectedPageId {
                 outcome = try graph.appendBlock(pageId: pageId, text: "", meta: meta("new block"))
             } else {
-                outcome = try graph.startJournal(date: nil, meta: meta("start journal"))
-                selectedPageId = try graph.journalPage(date: nil)?.id
+                let targetDate = pendingJournalTitle
+                outcome = try graph.startJournal(date: targetDate, meta: meta("start journal"))
+                selectedPageId = try graph.journalPage(date: targetDate)?.id
                 pendingJournalTitle = nil
             }
             apply(outcome)
@@ -576,14 +788,24 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func zoom(into blockId: String) {
+        if let pageId = selectedPageId {
+            pushHistoryIfNeeded(for: .page(id: pageId, zoomedBlockId: blockId))
+        }
+        clearSelection()
         leaveBlock()
         zoomedBlockId = blockId
+        rows = []
         reload()
     }
 
     public func zoomOut(to crumb: FfiCrumb) {
+        if let pageId = selectedPageId {
+            pushHistoryIfNeeded(for: .page(id: pageId, zoomedBlockId: crumb.blockId))
+        }
+        clearSelection()
         leaveBlock()
         zoomedBlockId = crumb.blockId
+        rows = []
         reload()
     }
 
@@ -658,9 +880,15 @@ public final class OutlinerController: ObservableObject {
         guard let state = completion else { return }
         let chosen = index ?? state.selected
         guard state.items.indices.contains(chosen) else { return }
-        let edit = applyCompletion(text: draftText, context: state.context, value: state.items[chosen].value)
+        let item = state.items[chosen]
+        if let command = item.slash {
+            runSlashCommand(command, context: state.context)
+            return
+        }
+        let value = item.value
         completion = nil
         isEditingRef = false
+        let edit = applyCompletion(text: draftText, context: state.context, value: value)
         draftText = edit.text
         requestCursor(Int(edit.caret))
         flushDraft()
@@ -703,8 +931,34 @@ public final class OutlinerController: ObservableObject {
                     isNew: false
                 )
             }
+        case .slash:
+            items = slashCommands(matching: context.query)
         }
         completion = items.isEmpty ? nil : CompletionState(context: context, items: items, selected: 0)
+    }
+
+    private func slashCommands(matching query: String) -> [CompletionItem] {
+        let commands = (try? PithCore.slashCommands(query: query)) ?? []
+        return commands.map { CompletionItem(label: $0.label, detail: $0.detail, value: $0.label, isNew: false, slash: $0.command) }
+    }
+
+    private func runSlashCommand(_ command: FfiSlashCommand, context: FfiCompletionContext) {
+        guard let blockId = focusedBlockId else { return }
+        cancelPendingSave()
+        completion = nil
+        isEditingRef = false
+        let caret = TextOffsets.length(editPrefix) + Int(context.end)
+        run {
+            guard let outcome = try graph.runSlashCommand(
+                blockId: blockId,
+                baseVersion: draftBaseVersion,
+                text: editPrefix + draftText,
+                caret: UInt32(caret),
+                command: command,
+                meta: meta("slash command")
+            ) else { return }
+            apply(outcome)
+        }
     }
 
     public func pollExternalChanges() {

@@ -3,6 +3,7 @@ import PithCore
 
 public extension NSAttributedString.Key {
     static let pithPageId = NSAttributedString.Key("pithPageId")
+    static let pithExternalURL = NSAttributedString.Key("pithExternalURL")
 }
 
 public enum BlockStyle {
@@ -44,6 +45,10 @@ public enum BlockStyle {
         storage.endEditing()
     }
 
+    static let boldFont: NSFont = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+
+    static let italicFont: NSFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+
     static func attributes(for kind: FfiHighlightKind) -> [NSAttributedString.Key: Any] {
         switch kind {
         case .bracket: return [.foregroundColor: Theme.nsBracket]
@@ -51,8 +56,39 @@ public enum BlockStyle {
         case .tag: return [.foregroundColor: Theme.nsTag]
         case .code: return codeAttributes
         case .blockRef: return blockRefAttributes
+        case .bold: return boldAttributes
+        case .italic: return italicAttributes
+        case .strike: return strikeAttributes
+        case .highlight: return highlightAttributes
+        case .externalLink: return externalLinkAttributes
         }
     }
+
+    static let boldAttributes: [NSAttributedString.Key: Any] = [
+        .font: boldFont,
+        .foregroundColor: Theme.nsTextStrong,
+    ]
+
+    static let italicAttributes: [NSAttributedString.Key: Any] = [
+        .font: italicFont,
+    ]
+
+    static let strikeAttributes: [NSAttributedString.Key: Any] = [
+        .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+        .strikethroughColor: Theme.nsClosedStrike,
+        .foregroundColor: Theme.nsTextSecondary,
+    ]
+
+    static let highlightAttributes: [NSAttributedString.Key: Any] = [
+        .backgroundColor: Theme.nsSelection,
+        .foregroundColor: Theme.nsTextStrong,
+    ]
+
+    static let externalLinkAttributes: [NSAttributedString.Key: Any] = [
+        .foregroundColor: Theme.nsLink,
+        .underlineStyle: NSUnderlineStyle.single.rawValue,
+        .underlineColor: Theme.nsLink.withAlphaComponent(0.45),
+    ]
 
     static let codeAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFontManager.shared.font(withFamily: Typography.monoFamily, traits: [], weight: 5, size: 13.5)
@@ -78,6 +114,17 @@ public enum BlockStyle {
                 attributes.merge(codeAttributes) { $1 }
             case .bracket:
                 attributes.merge(BlockStyle.attributes(for: .bracket)) { $1 }
+            case .bold:
+                attributes.merge(boldAttributes) { $1 }
+            case .italic:
+                attributes.merge(italicAttributes) { $1 }
+            case .strike:
+                attributes.merge(strikeAttributes) { $1 }
+            case .highlight:
+                attributes.merge(highlightAttributes) { $1 }
+            case let .externalLink(url):
+                attributes.merge(externalLinkAttributes) { $1 }
+                attributes[.pithExternalURL] = url
             case let .link(pageId):
                 attributes[.foregroundColor] = Theme.nsLink
                 attributes[.pithPageId] = pageId

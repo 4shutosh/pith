@@ -5,12 +5,14 @@ public struct CompletionItem: Equatable {
     public let detail: String?
     public let value: String
     public let isNew: Bool
+    public let slash: FfiSlashCommand?
 
-    public init(label: String, detail: String?, value: String, isNew: Bool) {
+    public init(label: String, detail: String?, value: String, isNew: Bool, slash: FfiSlashCommand? = nil) {
         self.label = label
         self.detail = detail
         self.value = value
         self.isNew = isNew
+        self.slash = slash
     }
 }
 

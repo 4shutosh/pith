@@ -53,10 +53,17 @@ pub enum Op {
         id: Id,
         collapsed: bool,
     },
+    SetPageFavorite {
+        id: Id,
+        favorite: bool,
+    },
 }
 
 impl Op {
     pub fn is_view_state(&self) -> bool {
-        matches!(self, Self::SetCollapsed { .. })
+        matches!(
+            self,
+            Self::SetCollapsed { .. } | Self::SetPageFavorite { .. }
+        )
     }
 }

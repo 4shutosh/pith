@@ -70,11 +70,12 @@ Full design notes live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Run the checked budgets with `cargo run --release -p pith-bench -- --check`.
 
-## Current Progress
+## What Works Today
 
-- **Working today:** Rust core (ops, inverses, transactional undo, parser, FTS5 trigram search, backlinks, 100k-block benchmark), `pith` CLI, UniFFI Swift bridge, and native macOS outliner (in-place editing, live syntax highlights, `[[`/`#`/`((` autocomplete, tasks, zoom breadcrumbs, multi-block selection, quick search, light/dark themes).
-- **In progress:** macOS daily-driver features (inline formatting, slash menu, journal stream, navigation history, page management).
-- **Planned:** Logseq Markdown import/export (`pith-md`), MCP server, native Android app, and offline-first sync.
+- **Core & CLI (`pith`):** SQLite + FTS5 trigram search, backlinks, tasks, properties, actor-scoped persistent undo, and a 100k-block benchmark.
+- **macOS app:** Native SwiftUI + AppKit outliner with in-place editing, inline formatting, `[[`/`#`/`((`/`/` autocomplete, multi-block selection, journals, favorites, and light/dark themes.
+
+**Planned:** Logseq Markdown import/export, MCP server, Android app, and offline-first sync.
 
 ## License
 

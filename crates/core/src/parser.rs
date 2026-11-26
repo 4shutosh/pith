@@ -373,6 +373,294 @@ pub enum HighlightKind {
     Tag,
     Code,
     BlockRef,
+    Bold,
+    Italic,
+    Strike,
+    Highlight,
+    ExternalLink,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineFormat {
+    Bold,
+    Italic,
+    Strike,
+    Highlight,
+}
+
+impl InlineFormat {
+    pub fn delimiter(self) -> &'static str {
+        match self {
+            Self::Bold => "**",
+            Self::Italic => "*",
+            Self::Strike => "~~",
+            Self::Highlight => "==",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InlineToken<'a> {
+    Text(&'a str),
+    Bold {
+        inner: &'a str,
+        raw: &'a str,
+    },
+    Italic {
+        inner: &'a str,
+        raw: &'a str,
+    },
+    Strike {
+        inner: &'a str,
+        raw: &'a str,
+    },
+    Highlight {
+        inner: &'a str,
+        raw: &'a str,
+    },
+    ExternalLink {
+        label: &'a str,
+        url: &'a str,
+        raw: &'a str,
+    },
+}
+
+pub fn tokenize_inline(text: &str) -> Vec<InlineToken<'_>> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut text_start = 0;
+
+    while i < len {
+        if i + 1 < len
+            && bytes[i] == b'*'
+            && bytes[i + 1] == b'*'
+            && let Some((inner, end)) = scan_inline_pair(text, i, "**")
+        {
+            push_inline_text(&mut out, &text[text_start..i]);
+            out.push(InlineToken::Bold {
+                inner,
+                raw: &text[i..end],
+            });
+            i = end;
+            text_start = i;
+            continue;
+        }
+        if i + 1 < len
+            && bytes[i] == b'~'
+            && bytes[i + 1] == b'~'
+            && let Some((inner, end)) = scan_inline_pair(text, i, "~~")
+        {
+            push_inline_text(&mut out, &text[text_start..i]);
+            out.push(InlineToken::Strike {
+                inner,
+                raw: &text[i..end],
+            });
+            i = end;
+            text_start = i;
+            continue;
+        }
+        if i + 1 < len
+            && bytes[i] == b'='
+            && bytes[i + 1] == b'='
+            && let Some((inner, end)) = scan_inline_pair(text, i, "==")
+        {
+            push_inline_text(&mut out, &text[text_start..i]);
+            out.push(InlineToken::Highlight {
+                inner,
+                raw: &text[i..end],
+            });
+            i = end;
+            text_start = i;
+            continue;
+        }
+        if bytes[i] == b'*'
+            && (i + 1 >= len || bytes[i + 1] != b'*')
+            && let Some((inner, end)) = scan_single_italic(text, i)
+        {
+            push_inline_text(&mut out, &text[text_start..i]);
+            out.push(InlineToken::Italic {
+                inner,
+                raw: &text[i..end],
+            });
+            i = end;
+            text_start = i;
+            continue;
+        }
+        if bytes[i] == b'['
+            && let Some((label, url, end)) = scan_markdown_link(text, i)
+        {
+            push_inline_text(&mut out, &text[text_start..i]);
+            out.push(InlineToken::ExternalLink {
+                label,
+                url,
+                raw: &text[i..end],
+            });
+            i = end;
+            text_start = i;
+            continue;
+        }
+        if (text[i..].starts_with("https://") || text[i..].starts_with("http://"))
+            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+            && let Some(end) = scan_autolink(text, i)
+        {
+            push_inline_text(&mut out, &text[text_start..i]);
+            let url = &text[i..end];
+            out.push(InlineToken::ExternalLink {
+                label: url,
+                url,
+                raw: url,
+            });
+            i = end;
+            text_start = i;
+            continue;
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+
+    push_inline_text(&mut out, &text[text_start..]);
+    out
+}
+
+fn push_inline_text<'a>(out: &mut Vec<InlineToken<'a>>, slice: &'a str) {
+    if !slice.is_empty() {
+        out.push(InlineToken::Text(slice));
+    }
+}
+
+fn scan_inline_pair<'a>(text: &'a str, start: usize, delim: &str) -> Option<(&'a str, usize)> {
+    let dlen = delim.len();
+    let rest = &text[start + dlen..];
+    let close = rest.find(delim)?;
+    if close == 0 {
+        return None;
+    }
+    let inner = &rest[..close];
+    if inner.contains('\n')
+        || inner.starts_with(char::is_whitespace)
+        || inner.ends_with(char::is_whitespace)
+    {
+        return None;
+    }
+    Some((inner, start + dlen + close + dlen))
+}
+
+fn scan_single_italic(text: &str, start: usize) -> Option<(&str, usize)> {
+    let rest = &text[start + 1..];
+    let bytes = rest.as_bytes();
+    for (idx, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            return None;
+        }
+        if b == b'*' {
+            if idx == 0 {
+                return None;
+            }
+            let inner = &rest[..idx];
+            if inner.starts_with(char::is_whitespace) || inner.ends_with(char::is_whitespace) {
+                return None;
+            }
+            return Some((inner, start + 1 + idx + 1));
+        }
+    }
+    None
+}
+
+fn scan_markdown_link(text: &str, start: usize) -> Option<(&str, &str, usize)> {
+    let rest = &text[start + 1..];
+    let close_bracket = rest.find(']')?;
+    let label = &rest[..close_bracket];
+    if label.is_empty() || label.contains(['\n', '[', ']']) {
+        return None;
+    }
+    let after_bracket = &rest[close_bracket + 1..];
+    if !after_bracket.starts_with('(') {
+        return None;
+    }
+    let close_paren = after_bracket[1..].find(')')?;
+    let url = &after_bracket[1..1 + close_paren];
+    if url.is_empty()
+        || url.contains(char::is_whitespace)
+        || !(url.starts_with("https://")
+            || url.starts_with("http://")
+            || url.starts_with("mailto:"))
+    {
+        return None;
+    }
+    let end = start + 1 + close_bracket + 2 + close_paren + 1;
+    Some((label, url, end))
+}
+
+fn scan_autolink(text: &str, start: usize) -> Option<usize> {
+    let rest = &text[start..];
+    let mut end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
+        .unwrap_or(rest.len());
+    while end > 0 {
+        let last = rest[..end].chars().next_back()?;
+        if matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}') {
+            end -= last.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let scheme_len = if rest.starts_with("https://") { 8 } else { 7 };
+    if end <= scheme_len {
+        return None;
+    }
+    Some(start + end)
+}
+
+pub fn toggle_inline_format(
+    text: &str,
+    start: usize,
+    end: usize,
+    format: InlineFormat,
+) -> (String, usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let s = start.min(len);
+    let e = end.clamp(s, len);
+    let delim: Vec<char> = format.delimiter().chars().collect();
+    let dlen = delim.len();
+
+    if s == e {
+        let mut out = String::with_capacity(text.len() + dlen * 2);
+        out.extend(&chars[..s]);
+        out.extend(&delim);
+        out.extend(&delim);
+        out.extend(&chars[s..]);
+        return (out, s + dlen, s + dlen);
+    }
+
+    if s >= dlen
+        && e + dlen <= len
+        && chars[s - dlen..s] == delim[..]
+        && chars[e..e + dlen] == delim[..]
+    {
+        let mut out = String::with_capacity(text.len());
+        out.extend(&chars[..s - dlen]);
+        out.extend(&chars[s..e]);
+        out.extend(&chars[e + dlen..]);
+        return (out, s - dlen, e - dlen);
+    }
+
+    if e - s >= dlen * 2 && chars[s..s + dlen] == delim[..] && chars[e - dlen..e] == delim[..] {
+        let mut out = String::with_capacity(text.len());
+        out.extend(&chars[..s]);
+        out.extend(&chars[s + dlen..e - dlen]);
+        out.extend(&chars[e..]);
+        return (out, s, e - dlen * 2);
+    }
+
+    let mut out = String::with_capacity(text.len() + dlen * 2);
+    out.extend(&chars[..s]);
+    out.extend(&delim);
+    out.extend(&chars[s..e]);
+    out.extend(&delim);
+    out.extend(&chars[e..]);
+    (out, s + dlen, e + dlen)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,44 +674,141 @@ pub fn highlight_ranges(text: &str) -> Vec<Highlight> {
     let mut out = Vec::new();
     let mut offset = 0;
     for span in tokenize(text) {
-        let (slice, kind) = match span {
-            Span::Text(s) => (s, None),
-            Span::Code(s) => (s, Some(HighlightKind::Code)),
-            Span::PageLink { raw, .. } => (raw, Some(HighlightKind::Link)),
-            Span::BracketTag { raw, .. } | Span::SimpleTag { raw, .. } => {
-                (raw, Some(HighlightKind::Tag))
+        match span {
+            Span::Text(s) => {
+                for inline in tokenize_inline(s) {
+                    match inline {
+                        InlineToken::Text(t) => offset += t.chars().count(),
+                        InlineToken::Bold { inner, raw } => {
+                            push_delimited_highlight(
+                                &mut out,
+                                offset,
+                                2,
+                                inner.chars().count(),
+                                HighlightKind::Bold,
+                            );
+                            offset += raw.chars().count();
+                        }
+                        InlineToken::Italic { inner, raw } => {
+                            push_delimited_highlight(
+                                &mut out,
+                                offset,
+                                1,
+                                inner.chars().count(),
+                                HighlightKind::Italic,
+                            );
+                            offset += raw.chars().count();
+                        }
+                        InlineToken::Strike { inner, raw } => {
+                            push_delimited_highlight(
+                                &mut out,
+                                offset,
+                                2,
+                                inner.chars().count(),
+                                HighlightKind::Strike,
+                            );
+                            offset += raw.chars().count();
+                        }
+                        InlineToken::Highlight { inner, raw } => {
+                            push_delimited_highlight(
+                                &mut out,
+                                offset,
+                                2,
+                                inner.chars().count(),
+                                HighlightKind::Highlight,
+                            );
+                            offset += raw.chars().count();
+                        }
+                        InlineToken::ExternalLink { label, raw, .. } => {
+                            let raw_len = raw.chars().count();
+                            let label_len = label.chars().count();
+                            if raw.starts_with('[') && raw_len > label_len + 2 {
+                                out.push(Highlight {
+                                    start: offset,
+                                    len: 1,
+                                    kind: HighlightKind::Bracket,
+                                });
+                                out.push(Highlight {
+                                    start: offset + 1,
+                                    len: label_len,
+                                    kind: HighlightKind::ExternalLink,
+                                });
+                                out.push(Highlight {
+                                    start: offset + 1 + label_len,
+                                    len: raw_len - label_len - 1,
+                                    kind: HighlightKind::Bracket,
+                                });
+                            } else {
+                                out.push(Highlight {
+                                    start: offset,
+                                    len: raw_len,
+                                    kind: HighlightKind::ExternalLink,
+                                });
+                            }
+                            offset += raw_len;
+                        }
+                    }
+                }
             }
-            Span::BlockRef { raw, .. } => (raw, Some(HighlightKind::BlockRef)),
-        };
-        let len = slice.chars().count();
-        match kind {
-            Some(HighlightKind::Link) => {
+            Span::Code(s) => {
+                let len = s.chars().count();
                 out.push(Highlight {
                     start: offset,
-                    len: 2,
-                    kind: HighlightKind::Bracket,
+                    len,
+                    kind: HighlightKind::Code,
                 });
-                out.push(Highlight {
-                    start: offset + 2,
-                    len: len - 4,
-                    kind: HighlightKind::Link,
-                });
-                out.push(Highlight {
-                    start: offset + len - 2,
-                    len: 2,
-                    kind: HighlightKind::Bracket,
-                });
+                offset += len;
             }
-            Some(kind) => out.push(Highlight {
-                start: offset,
-                len,
-                kind,
-            }),
-            None => {}
+            Span::PageLink { raw, .. } => {
+                let len = raw.chars().count();
+                push_delimited_highlight(&mut out, offset, 2, len - 4, HighlightKind::Link);
+                offset += len;
+            }
+            Span::BracketTag { raw, .. } | Span::SimpleTag { raw, .. } => {
+                let len = raw.chars().count();
+                out.push(Highlight {
+                    start: offset,
+                    len,
+                    kind: HighlightKind::Tag,
+                });
+                offset += len;
+            }
+            Span::BlockRef { raw, .. } => {
+                let len = raw.chars().count();
+                out.push(Highlight {
+                    start: offset,
+                    len,
+                    kind: HighlightKind::BlockRef,
+                });
+                offset += len;
+            }
         }
-        offset += len;
     }
     out
+}
+
+fn push_delimited_highlight(
+    out: &mut Vec<Highlight>,
+    offset: usize,
+    delim_len: usize,
+    inner_len: usize,
+    kind: HighlightKind,
+) {
+    out.push(Highlight {
+        start: offset,
+        len: delim_len,
+        kind: HighlightKind::Bracket,
+    });
+    out.push(Highlight {
+        start: offset + delim_len,
+        len: inner_len,
+        kind,
+    });
+    out.push(Highlight {
+        start: offset + delim_len + inner_len,
+        len: delim_len,
+        kind: HighlightKind::Bracket,
+    });
 }
 
 pub fn pin_known_titles(content: &str, lookup: impl Fn(&str) -> Option<Id>) -> String {
@@ -456,6 +841,7 @@ pub enum CompletionKind {
     Page,
     Tag,
     Block,
+    Slash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,6 +859,7 @@ pub fn completion_context(text: &str, caret: usize) -> Option<CompletionContext>
     bracket_context(&chars, before, caret, '[', ']')
         .or_else(|| bracket_context(&chars, before, caret, '(', ')'))
         .or_else(|| tag_context(before, caret))
+        .or_else(|| slash_context(before, caret))
 }
 
 fn bracket_context(
@@ -523,11 +910,145 @@ fn tag_context(before: &[char], caret: usize) -> Option<CompletionContext> {
     })
 }
 
+fn slash_context(before: &[char], caret: usize) -> Option<CompletionContext> {
+    let slash = before
+        .iter()
+        .rposition(|&c| c == '/' || c.is_whitespace())?;
+    if before[slash] != '/' {
+        return None;
+    }
+    let boundary = slash == 0 || before[slash - 1].is_whitespace();
+    if !boundary {
+        return None;
+    }
+    Some(CompletionContext {
+        kind: CompletionKind::Slash,
+        query: before[slash + 1..].iter().collect(),
+        start: slash,
+        end: caret,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlashCommand {
+    Todo,
+    Doing,
+    Done,
+    Today,
+    Tomorrow,
+    Yesterday,
+    CurrentTime,
+    CodeBlock,
+}
+
+impl SlashCommand {
+    pub const ALL: [SlashCommand; 8] = [
+        Self::Todo,
+        Self::Doing,
+        Self::Done,
+        Self::Today,
+        Self::Tomorrow,
+        Self::Yesterday,
+        Self::CurrentTime,
+        Self::CodeBlock,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Todo => "TODO",
+            Self::Doing => "DOING",
+            Self::Done => "DONE",
+            Self::Today => "Today",
+            Self::Tomorrow => "Tomorrow",
+            Self::Yesterday => "Yesterday",
+            Self::CurrentTime => "Current time",
+            Self::CodeBlock => "Code block",
+        }
+    }
+
+    fn task_state(self) -> Option<&'static str> {
+        match self {
+            Self::Todo => Some("TODO"),
+            Self::Doing => Some("DOING"),
+            Self::Done => Some("DONE"),
+            _ => None,
+        }
+    }
+}
+
+pub fn slash_commands(query: &str) -> Vec<SlashCommand> {
+    let needle = query.trim().to_lowercase();
+    SlashCommand::ALL
+        .into_iter()
+        .filter(|c| c.label().to_lowercase().contains(&needle))
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashClock<'a> {
+    pub today: &'a str,
+    pub tomorrow: &'a str,
+    pub yesterday: &'a str,
+    pub time: &'a str,
+}
+
+pub fn slash_preview(command: SlashCommand, clock: &SlashClock<'_>) -> Option<String> {
+    match command {
+        SlashCommand::Today => Some(clock.today.to_string()),
+        SlashCommand::Tomorrow => Some(clock.tomorrow.to_string()),
+        SlashCommand::Yesterday => Some(clock.yesterday.to_string()),
+        SlashCommand::CurrentTime => Some(clock.time.to_string()),
+        SlashCommand::Todo | SlashCommand::Doing | SlashCommand::Done | SlashCommand::CodeBlock => {
+            None
+        }
+    }
+}
+
+pub fn apply_slash_command(
+    text: &str,
+    caret: usize,
+    command: SlashCommand,
+    clock: &SlashClock<'_>,
+) -> Option<(String, usize)> {
+    let context = completion_context(text, caret).filter(|c| c.kind == CompletionKind::Slash)?;
+    let chars: Vec<char> = text.chars().collect();
+    let before: String = chars[..context.start].iter().collect();
+    let after: String = chars[context.end..].iter().collect();
+    if let Some(state) = command.task_state() {
+        let body_before = if context.start == 0 {
+            String::new()
+        } else {
+            before
+        };
+        let after = if context.start == 0 {
+            after.trim_start().to_string()
+        } else {
+            after
+        };
+        let stripped = format!("{body_before}{after}");
+        let updated = set_task_state_in_content(&stripped, Some(state));
+        let shift = updated.chars().count() - stripped.chars().count();
+        return Some((updated, body_before.chars().count() + shift));
+    }
+    let (insertion, caret_in_insertion) = match command {
+        SlashCommand::Today => (page_link_source(clock.today), None),
+        SlashCommand::Tomorrow => (page_link_source(clock.tomorrow), None),
+        SlashCommand::Yesterday => (page_link_source(clock.yesterday), None),
+        SlashCommand::CurrentTime => (clock.time.to_string(), None),
+        SlashCommand::CodeBlock => ("```\n\n```".to_string(), Some(4)),
+        SlashCommand::Todo | SlashCommand::Doing | SlashCommand::Done => return None,
+    };
+    let start = before.chars().count();
+    let caret = start + caret_in_insertion.unwrap_or(insertion.chars().count());
+    Some((format!("{before}{insertion}{after}"), caret))
+}
+
 pub fn completion_insertion(kind: CompletionKind, value: &str) -> String {
     match kind {
         CompletionKind::Page => page_link_source(value),
         CompletionKind::Tag => tag_source(value),
         CompletionKind::Block => format!("(({value}))"),
+        CompletionKind::Slash => value.to_string(),
     }
 }
 

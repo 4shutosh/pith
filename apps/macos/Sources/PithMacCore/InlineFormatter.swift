@@ -26,6 +26,31 @@ public enum InlineFormatter {
             code.foregroundColor = Theme.codeText
             code.backgroundColor = Theme.codeBg
             return code
+        case let .bold(text, _):
+            var span = AttributedString(text)
+            span.font = Typography.ui(14, .semibold)
+            return span
+        case let .italic(text, _):
+            var span = AttributedString(text)
+            span.font = Typography.ui(14).italic()
+            return span
+        case let .strike(text, _):
+            var span = AttributedString(text)
+            span.strikethroughStyle = .single
+            span.foregroundColor = Theme.textTertiary
+            return span
+        case let .highlight(text, _):
+            var span = AttributedString(text)
+            span.backgroundColor = Theme.accent.opacity(0.24)
+            return span
+        case let .externalLink(label, url, _):
+            var span = AttributedString(label)
+            span.foregroundColor = muted ? Theme.textTertiary : Theme.link
+            span.underlineStyle = .single
+            if let parsed = URL(string: url) {
+                span.link = parsed
+            }
+            return span
         case let .task(state, _):
             var label = AttributedString(state)
             label.foregroundColor = Theme.textTertiary

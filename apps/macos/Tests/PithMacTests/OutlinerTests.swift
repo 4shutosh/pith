@@ -395,4 +395,81 @@ final class OutlinerTests: XCTestCase {
         XCTAssertFalse(titlesAfterLeaving.contains("Ro"))
         XCTAssertTrue(titlesAfterLeaving.contains("Road"))
     }
+
+    func testNavigationHistoryJournalSteppingFavoritesRenameDeleteAndPagination() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.pageWindowLimit = 2
+
+        controller.openPageByTitle("Alpha")
+        let alphaId = try XCTUnwrap(controller.selectedPageId)
+        controller.ensureFirstBlockAndFocus()
+        try type(controller, "One")
+        controller.handleReturn(at: 3)
+        try type(controller, "Two")
+        controller.handleReturn(at: 3)
+        try type(controller, "Three")
+
+        controller.selectPage(alphaId)
+        XCTAssertEqual(controller.rows.count, 2)
+        XCTAssertTrue(controller.hasMoreRows)
+        controller.loadMoreRows()
+        XCTAssertEqual(controller.rows.count, 3)
+        XCTAssertFalse(controller.hasMoreRows)
+
+        controller.toggleFavorite(alphaId)
+        XCTAssertEqual(controller.favoritePages.map(\.id), [alphaId])
+
+        controller.renameCurrentPage(to: "Alpha Renamed")
+        XCTAssertEqual(controller.pageTitle, "Alpha Renamed")
+
+        let firstBlockId = controller.rows[0].id
+        controller.zoom(into: firstBlockId)
+        XCTAssertEqual(controller.zoomedBlockId, firstBlockId)
+        XCTAssertTrue(controller.canGoBack)
+
+        controller.goBack()
+        XCTAssertNil(controller.zoomedBlockId)
+        XCTAssertTrue(controller.canGoForward)
+
+        controller.goForward()
+        XCTAssertEqual(controller.zoomedBlockId, firstBlockId)
+
+        controller.stepJournalDay(-1)
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let yesterday = formatter.string(from: try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: Date())))
+        XCTAssertEqual(controller.pageTitle, yesterday)
+
+        controller.selectPage(alphaId)
+        controller.deleteCurrentPage()
+        XCTAssertFalse(controller.pages.contains { $0.id == alphaId })
+    }
+
+    func testSlashMenuInsertsDateAndTaskCommands() throws {
+        let graph = try PithGraph.openInMemory()
+        let controller = try makeController(graph)
+        controller.ensureFirstBlockAndFocus()
+        let id = try XCTUnwrap(controller.focusedBlockId)
+
+        controller.updateDraft(blockId: id, text: "due /today", isComposing: false, caret: 10)
+        XCTAssertEqual(controller.completion?.context.kind, .slash)
+        XCTAssertEqual(controller.completion?.items.first?.label, "Today")
+        controller.acceptCompletion()
+        XCTAssertEqual(controller.rows[0].renderedContent, "due [[\(controller.todayTitle)]]")
+
+        controller.updateDraft(blockId: id, text: "/todo ship it", isComposing: false, caret: 5)
+        XCTAssertEqual(controller.completion?.items.first?.label, "TODO")
+        controller.acceptCompletion()
+        XCTAssertEqual(controller.rows[0].renderedContent, "TODO ship it")
+
+        controller.updateDraft(blockId: id, text: "ship it /done", isComposing: false, caret: 13)
+        XCTAssertEqual(controller.completion?.items.map(\.label), ["DONE"])
+        controller.acceptCompletion()
+        XCTAssertEqual(controller.rows[0].renderedContent, "DONE ship it ")
+        XCTAssertEqual(controller.draftText, "ship it ")
+        XCTAssertEqual(controller.requestedCursorOffset, 8)
+    }
 }
