@@ -6,7 +6,13 @@ use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::parser::{self, RefTarget, Span};
 use crate::snippet;
-use crate::types::{Backlink, PropRecord, RenderedSpan, SearchHit};
+use crate::types::{Backlink, BlockProp, PropRecord, RenderedSpan, SearchHit, UnlinkedRef};
+
+#[derive(Debug, Clone)]
+pub struct PageLookup {
+    pub title: String,
+    pub deleted: bool,
+}
 
 pub struct DerivedRows {
     pub refs: Vec<(Id, String, Id)>,
@@ -37,28 +43,43 @@ pub fn derive_rows(block_id: Id, content: &str) -> DerivedRows {
     }
 }
 
-pub fn lookup_page_title(
+pub fn lookup_page_info(
     conn: &Connection,
-    cache: &mut HashMap<Id, Option<String>>,
+    cache: &mut HashMap<Id, Option<PageLookup>>,
     page_id: Id,
-) -> Result<Option<String>> {
+) -> Result<Option<PageLookup>> {
     if let Some(cached) = cache.get(&page_id) {
         return Ok(cached.clone());
     }
-    let title: Option<String> = conn
+    let info: Option<PageLookup> = conn
         .query_row(
-            "SELECT title FROM pages WHERE id = ?1",
+            "SELECT title, deleted_at FROM pages WHERE id = ?1",
             params![page_id.as_bytes().as_slice()],
-            |row| row.get(0),
+            |row| {
+                let title: String = row.get(0)?;
+                let deleted_at: Option<i64> = row.get(1)?;
+                Ok(PageLookup {
+                    title,
+                    deleted: deleted_at.is_some(),
+                })
+            },
         )
         .optional()?;
-    cache.insert(page_id, title.clone());
-    Ok(title)
+    cache.insert(page_id, info.clone());
+    Ok(info)
+}
+
+pub fn lookup_page_title(
+    conn: &Connection,
+    cache: &mut HashMap<Id, Option<PageLookup>>,
+    page_id: Id,
+) -> Result<Option<String>> {
+    Ok(lookup_page_info(conn, cache, page_id)?.map(|info| info.title))
 }
 
 pub fn render_content_with_cache(
     conn: &Connection,
-    cache: &mut HashMap<Id, Option<String>>,
+    cache: &mut HashMap<Id, Option<PageLookup>>,
     content: &str,
 ) -> Result<String> {
     parser::render_page_refs(content, |id| lookup_page_title(conn, cache, id))
@@ -66,7 +87,7 @@ pub fn render_content_with_cache(
 
 pub fn render_spans(
     conn: &Connection,
-    cache: &mut HashMap<Id, Option<String>>,
+    cache: &mut HashMap<Id, Option<PageLookup>>,
     content: &str,
 ) -> Result<Vec<RenderedSpan>> {
     let mut pending_task = parser::parse_task_state(content);
@@ -122,11 +143,12 @@ pub fn render_spans(
             }
             Span::Code(code) => out.push(RenderedSpan::Code(code.to_string())),
             Span::PageLink { raw, target } => out.push(match target {
-                RefTarget::Id(id) => match lookup_page_title(conn, cache, id)? {
-                    Some(title) => RenderedSpan::PageLink {
+                RefTarget::Id(id) => match lookup_page_info(conn, cache, id)? {
+                    Some(info) => RenderedSpan::PageLink {
                         page_id: Some(id),
-                        source: parser::page_link_source(&title),
-                        title,
+                        source: parser::page_link_source(&info.title),
+                        title: info.title,
+                        deleted: info.deleted,
                     },
                     None => RenderedSpan::Text(raw.to_string()),
                 },
@@ -134,15 +156,17 @@ pub fn render_spans(
                     page_id: None,
                     source: raw.to_string(),
                     title,
+                    deleted: false,
                 },
             }),
             Span::BracketTag { raw, target } | Span::SimpleTag { raw, target } => {
                 out.push(match target {
-                    RefTarget::Id(id) => match lookup_page_title(conn, cache, id)? {
-                        Some(title) => RenderedSpan::Tag {
+                    RefTarget::Id(id) => match lookup_page_info(conn, cache, id)? {
+                        Some(info) => RenderedSpan::Tag {
                             page_id: Some(id),
-                            source: parser::tag_source(&title),
-                            title,
+                            source: parser::tag_source(&info.title),
+                            title: info.title,
+                            deleted: info.deleted,
                         },
                         None => RenderedSpan::Text(raw.to_string()),
                     },
@@ -150,6 +174,7 @@ pub fn render_spans(
                         page_id: None,
                         source: raw.to_string(),
                         title,
+                        deleted: false,
                     },
                 })
             }
@@ -174,6 +199,99 @@ pub fn render_spans(
                 });
             }
         }
+    }
+    Ok(out)
+}
+
+pub fn render_block_props_and_body(
+    conn: &Connection,
+    cache: &mut HashMap<Id, Option<PageLookup>>,
+    content: &str,
+) -> Result<(Vec<BlockProp>, Option<Vec<RenderedSpan>>)> {
+    let (body_raw, raw_props) = parser::split_body_and_prop_lines(content);
+    if raw_props.is_empty() {
+        return Ok((Vec::new(), None));
+    }
+    let mut props = Vec::with_capacity(raw_props.len());
+    for (key, raw_value) in raw_props {
+        let value = render_content_with_cache(conn, cache, &raw_value)?;
+        let value_spans = render_spans(conn, cache, &raw_value)?;
+        props.push(BlockProp {
+            key,
+            value,
+            value_spans,
+        });
+    }
+    let body_spans = if body_raw.is_empty() {
+        Vec::new()
+    } else {
+        render_spans(conn, cache, &body_raw)?
+    };
+    Ok((props, Some(body_spans)))
+}
+
+pub fn query_unlinked_references(
+    conn: &Connection,
+    page_id: Id,
+    page_title: &str,
+    limit: usize,
+) -> Result<Vec<UnlinkedRef>> {
+    let trimmed = page_title.trim();
+    if trimmed.chars().count() < 3 || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(match_expr) = build_trigram_query(trimmed) else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.page_id, p.title, b.content
+         FROM blocks_fts
+         JOIN blocks b ON b.seq = blocks_fts.rowid
+         JOIN pages p ON p.id = b.page_id
+         WHERE blocks_fts MATCH ?1
+           AND b.deleted_at IS NULL
+           AND p.deleted_at IS NULL
+           AND b.page_id != ?2
+           AND NOT EXISTS (
+               SELECT 1 FROM refs r WHERE r.src_block = b.id AND r.target = ?2
+           )
+         ORDER BY p.title_lower, b.order_key, b.id",
+    )?;
+    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
+    let mut out = Vec::new();
+    let rows = stmt.query_map(params![match_expr, page_id.as_bytes().as_slice()], |r| {
+        Ok((
+            r.get::<_, Vec<u8>>(0)?,
+            r.get::<_, Vec<u8>>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in rows {
+        if out.len() >= limit {
+            break;
+        }
+        let (bid_b, pid_b, src_page_title, content) = row?;
+        let block_id = Id::from_slice(&bid_b)
+            .ok_or_else(|| Error::InvariantViolation("invalid block id bytes".to_string()))?;
+        let src_page_id = Id::from_slice(&pid_b)
+            .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
+        let rendered_content = render_content_with_cache(conn, &mut title_cache, &content)?;
+        let Some((_, _, match_start, match_len)) =
+            parser::find_unlinked_match(&rendered_content, trimmed)
+        else {
+            continue;
+        };
+        let spans = render_spans(conn, &mut title_cache, &content)?;
+        out.push(UnlinkedRef {
+            block_id,
+            page_id: src_page_id,
+            page_title: src_page_title,
+            rendered_content,
+            spans,
+            match_start,
+            match_len,
+        });
     }
     Ok(out)
 }
@@ -207,7 +325,7 @@ pub fn sync_derived_in_tx(
         }
     }
 
-    let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
     for block_id in block_ids {
         sync_single_block(tx, block_id, &mut title_cache)?;
     }
@@ -238,7 +356,7 @@ fn write_derived(
     seq: i64,
     block_id: Id,
     content: &str,
-    title_cache: &mut HashMap<Id, Option<String>>,
+    title_cache: &mut HashMap<Id, Option<PageLookup>>,
 ) -> Result<()> {
     let derived = derive_rows(block_id, content);
 
@@ -285,7 +403,7 @@ fn write_derived(
 fn sync_single_block(
     tx: &Transaction<'_>,
     block_id: Id,
-    title_cache: &mut HashMap<Id, Option<String>>,
+    title_cache: &mut HashMap<Id, Option<PageLookup>>,
 ) -> Result<()> {
     let row: Option<(i64, String, Option<i64>)> = tx
         .prepare_cached("SELECT seq, content, deleted_at FROM blocks WHERE id = ?1")?
@@ -321,7 +439,7 @@ pub fn rebuild_all(conn: &mut Connection) -> Result<()> {
          DELETE FROM blocks_fts; DELETE FROM pages_fts;",
     )?;
 
-    let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
     {
         let mut page_stmt = tx.prepare("SELECT seq, id, title, deleted_at FROM pages")?;
         let mut page_fts = tx.prepare("INSERT INTO pages_fts (rowid, title) VALUES (?1, ?2)")?;
@@ -336,10 +454,11 @@ pub fn rebuild_all(conn: &mut Connection) -> Result<()> {
             let (seq, id_bytes, title, deleted_at) = row?;
             let id = Id::from_slice(&id_bytes)
                 .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
-            if deleted_at.is_none() {
+            let deleted = deleted_at.is_some();
+            if !deleted {
                 page_fts.execute(params![seq, title])?;
             }
-            title_cache.insert(id, Some(title));
+            title_cache.insert(id, Some(PageLookup { title, deleted }));
         }
     }
 
@@ -376,7 +495,7 @@ pub fn search_blocks(conn: &Connection, query: &str, limit: usize) -> Result<Vec
         return Ok(Vec::new());
     }
 
-    let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
     let mut hits = Vec::new();
 
     if trimmed.chars().count() < 3 {
@@ -486,7 +605,7 @@ pub fn search_blocks(conn: &Connection, query: &str, limit: usize) -> Result<Vec
 
 fn ancestor_crumbs(
     conn: &Connection,
-    cache: &mut HashMap<Id, Option<String>>,
+    cache: &mut HashMap<Id, Option<PageLookup>>,
     block_id: Id,
 ) -> Result<Vec<String>> {
     let mut crumbs = Vec::new();
@@ -522,7 +641,7 @@ pub fn query_backlinks(conn: &Connection, target: Id) -> Result<Vec<Backlink>> {
          WHERE r.target = ?1 AND b.deleted_at IS NULL AND p.deleted_at IS NULL
          ORDER BY p.title_lower, b.order_key, b.id, r.kind",
     )?;
-    let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let rows = stmt.query_map(params![target.as_bytes().as_slice()], |r| {
@@ -591,7 +710,7 @@ pub fn query_props(conn: &Connection, key: &str, value: Option<&str>) -> Result<
 }
 
 pub fn verify_derived_invariants(conn: &Connection) -> Result<()> {
-    let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
     let live_block_rows: Vec<(i64, Id, String)> = {
         let mut stmt =
             conn.prepare("SELECT seq, id, content FROM blocks WHERE deleted_at IS NULL")?;

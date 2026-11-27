@@ -1,5 +1,6 @@
 pub mod api;
 pub mod derive;
+pub mod display;
 pub mod editor;
 pub mod error;
 pub mod id;
@@ -22,7 +23,7 @@ pub use id::Id;
 pub use ops::Op;
 pub use store::{LiveBlockState, LivePageState, LiveSnapshot, Store};
 pub use types::{
-    ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, Crumb, EditOutcome, FlatBlockRow,
-    OpRecord, Origin, Page, PageSummary, PageWindow, PropRecord, RenderedSpan, SearchHit, TxMeta,
-    TxnRecord,
+    ApplyResult, Backlink, Block, BlockKind, BlockLocation, BlockProp, ChangeEntry, ChangeFeed,
+    Crumb, EditOutcome, FlatBlockRow, LinkPreview, OpRecord, Origin, Page, PageMatch, PageSummary,
+    PageWindow, PreviewLine, PropRecord, RenderedSpan, SearchHit, TxMeta, TxnRecord, UnlinkedRef,
 };

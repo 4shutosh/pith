@@ -501,7 +501,7 @@ impl Store {
         let total_visible = visible.len() as u64;
         let start = (offset as usize).min(visible.len());
         let end = start.saturating_add(limit as usize).min(visible.len());
-        let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+        let mut title_cache: HashMap<Id, Option<derive::PageLookup>> = HashMap::new();
         let mut rows = Vec::with_capacity(end - start);
 
         for item in &visible[start..end] {
@@ -549,8 +549,15 @@ impl Store {
         block: &Block,
         depth: u32,
         has_children: bool,
-        title_cache: &mut HashMap<Id, Option<String>>,
+        title_cache: &mut HashMap<Id, Option<derive::PageLookup>>,
     ) -> Result<FlatBlockRow> {
+        let rendered_content =
+            derive::render_content_with_cache(&self.conn, title_cache, &block.content)?;
+        let spans = derive::render_spans(&self.conn, title_cache, &block.content)?;
+        let kind = parser::classify_block(&rendered_content);
+        let (props, body_spans) =
+            derive::render_block_props_and_body(&self.conn, title_cache, &block.content)?;
+        let display = crate::display::block_display(body_spans.as_ref().unwrap_or(&spans), &kind);
         Ok(FlatBlockRow {
             id: block.id,
             page_id: block.page_id,
@@ -558,16 +565,153 @@ impl Store {
             order_key: block.order_key.clone(),
             depth,
             raw_content: block.content.clone(),
-            rendered_content: derive::render_content_with_cache(
-                &self.conn,
-                title_cache,
-                &block.content,
-            )?,
-            spans: derive::render_spans(&self.conn, title_cache, &block.content)?,
+            rendered_content,
+            spans,
+            kind,
+            props,
+            body_spans,
+            display,
             collapsed: block.collapsed,
             has_children,
             version: block.version,
         })
+    }
+
+    pub fn find_in_page(
+        &self,
+        page_id: Id,
+        root_block_id: Option<Id>,
+        query: &str,
+    ) -> Result<Vec<crate::types::PageMatch>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let blocks = self.walk_tree(page_id, root_block_id, true)?;
+        let mut title_cache: HashMap<Id, Option<derive::PageLookup>> = HashMap::new();
+        let mut out = Vec::new();
+        for item in blocks {
+            let row =
+                self.flat_row(&item.block, item.depth, item.has_children, &mut title_cache)?;
+            for (start, len) in parser::find_case_insensitive_matches(&row.display.text(), trimmed)
+            {
+                out.push(crate::types::PageMatch {
+                    block_id: item.block.id,
+                    start,
+                    len,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn preview_page(
+        &self,
+        page_id: Id,
+        max_lines: usize,
+    ) -> Result<Option<crate::types::LinkPreview>> {
+        let Some(page) = self.get_page(page_id)? else {
+            return Ok(None);
+        };
+        if page.deleted_at.is_some() {
+            return Ok(Some(crate::types::LinkPreview {
+                title: page.title,
+                deleted: true,
+                lines: Vec::new(),
+                total_blocks: 0,
+                backlink_count: 0,
+                parent_path: Vec::new(),
+            }));
+        }
+        let visible = self.visible_blocks(page_id)?;
+        let total_blocks = visible.len() as u64;
+        let backlink_count: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT r.src_block)
+             FROM refs r
+             JOIN blocks b ON b.id = r.src_block
+             JOIN pages p ON p.id = b.page_id
+             WHERE r.target = ?1 AND b.deleted_at IS NULL AND p.deleted_at IS NULL",
+            params![page_id.as_bytes().as_slice()],
+            |r| r.get(0),
+        )?;
+        let mut title_cache: HashMap<Id, Option<derive::PageLookup>> = HashMap::new();
+        let mut lines = Vec::new();
+        for item in visible.iter().take(max_lines) {
+            lines.push(crate::types::PreviewLine {
+                depth: item.depth,
+                spans: derive::render_spans(&self.conn, &mut title_cache, &item.block.content)?,
+            });
+        }
+        Ok(Some(crate::types::LinkPreview {
+            title: page.title,
+            deleted: false,
+            lines,
+            total_blocks,
+            backlink_count: backlink_count.max(0) as u64,
+            parent_path: Vec::new(),
+        }))
+    }
+
+    pub fn preview_block(
+        &self,
+        block_id: Id,
+        max_lines: usize,
+    ) -> Result<Option<crate::types::LinkPreview>> {
+        let Some(block) = self.get_block(block_id)? else {
+            return Ok(None);
+        };
+        if block.deleted_at.is_some() {
+            return Ok(Some(crate::types::LinkPreview {
+                title: String::new(),
+                deleted: true,
+                lines: Vec::new(),
+                total_blocks: 0,
+                backlink_count: 0,
+                parent_path: Vec::new(),
+            }));
+        }
+        let page = self
+            .get_page(block.page_id)?
+            .ok_or(Error::NotFound(block.page_id))?;
+        let visible = self.visible_from(block.page_id, Some(block_id))?;
+        let total_blocks = visible.len() as u64;
+        let mut title_cache: HashMap<Id, Option<derive::PageLookup>> = HashMap::new();
+        let mut lines = Vec::new();
+        for item in visible.iter().take(max_lines.max(1)) {
+            lines.push(crate::types::PreviewLine {
+                depth: item.depth,
+                spans: derive::render_spans(&self.conn, &mut title_cache, &item.block.content)?,
+            });
+        }
+        let crumbs = self.block_breadcrumb(block_id)?;
+        let parent_path: Vec<String> = crumbs
+            .iter()
+            .skip(1)
+            .take(crumbs.len().saturating_sub(2))
+            .map(|c| c.label.clone())
+            .collect();
+        Ok(Some(crate::types::LinkPreview {
+            title: page.title,
+            deleted: false,
+            lines,
+            total_blocks,
+            backlink_count: 0,
+            parent_path,
+        }))
+    }
+
+    pub fn unlinked_references(
+        &self,
+        page_id: Id,
+        limit: usize,
+    ) -> Result<Vec<crate::types::UnlinkedRef>> {
+        let Some(page) = self.get_page(page_id)? else {
+            return Ok(Vec::new());
+        };
+        if page.deleted_at.is_some() {
+            return Ok(Vec::new());
+        }
+        derive::query_unlinked_references(&self.conn, page_id, &page.title, limit)
     }
 
     pub(crate) fn visible_blocks(&self, page_id: Id) -> Result<Vec<VisibleBlock>> {
@@ -575,6 +719,15 @@ impl Store {
     }
 
     fn visible_from(&self, page_id: Id, root: Option<Id>) -> Result<Vec<VisibleBlock>> {
+        self.walk_tree(page_id, root, false)
+    }
+
+    fn walk_tree(
+        &self,
+        page_id: Id,
+        root: Option<Id>,
+        include_collapsed: bool,
+    ) -> Result<Vec<VisibleBlock>> {
         let live_blocks = self.list_live_blocks(page_id)?;
         let mut by_parent: HashMap<Option<Id>, Vec<&Block>> = HashMap::new();
         for block in &live_blocks {
@@ -605,7 +758,7 @@ impl Store {
                 depth,
                 has_children: children.is_some_and(|c| !c.is_empty()),
             });
-            if !block.collapsed
+            if (include_collapsed || !block.collapsed)
                 && let Some(kids) = children
             {
                 for &child in kids.iter().rev() {
@@ -628,7 +781,7 @@ impl Store {
         let total_visible = visible.len() as u64;
         let start = (offset as usize).min(visible.len());
         let end = start.saturating_add(limit as usize).min(visible.len());
-        let mut title_cache: HashMap<Id, Option<String>> = HashMap::new();
+        let mut title_cache: HashMap<Id, Option<derive::PageLookup>> = HashMap::new();
         let mut rows = Vec::with_capacity(end - start);
         for item in &visible[start..end] {
             rows.push(self.flat_row(

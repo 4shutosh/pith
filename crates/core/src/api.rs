@@ -696,30 +696,38 @@ pub fn parse_markdown_tree(markdown: &str) -> Result<Vec<MarkdownNode>> {
     }
 
     let mut roots: Vec<MarkdownNode> = Vec::new();
-    let mut stack: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut stack: Vec<OpenNode> = Vec::new();
 
     for line in lines {
+        if let Some(open) = stack.last_mut()
+            && open.in_fence
+        {
+            let current = node_at_path_mut(&mut roots, &open.path);
+            current.content.push('\n');
+            current.content.push_str(dedent(line, open.content_column));
+            if closes_fence(line) {
+                open.in_fence = false;
+            }
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
         let indent = leading_indent(line);
         let trimmed = line.trim_start();
         if let Some(body) = strip_bullet(trimmed) {
-            while stack
-                .last()
-                .is_some_and(|(parent_indent, _)| *parent_indent >= indent)
-            {
+            while stack.last().is_some_and(|open| open.indent >= indent) {
                 stack.pop();
             }
             let node = MarkdownNode {
                 content: body.to_string(),
                 children: Vec::new(),
             };
-            let path = if let Some((_, parent_path)) = stack.last() {
-                let parent = node_at_path_mut(&mut roots, parent_path);
-                let idx = parent.children.len();
-                parent.children.push(node);
-                let mut next_path = parent_path.clone();
+            let path = if let Some(parent) = stack.last() {
+                let parent_node = node_at_path_mut(&mut roots, &parent.path);
+                let idx = parent_node.children.len();
+                parent_node.children.push(node);
+                let mut next_path = parent.path.clone();
                 next_path.push(idx);
                 next_path
             } else {
@@ -727,18 +735,31 @@ pub fn parse_markdown_tree(markdown: &str) -> Result<Vec<MarkdownNode>> {
                 roots.push(node);
                 vec![idx]
             };
-            stack.push((indent, path));
-        } else if let Some((_, current_path)) = stack.last() {
-            let current = node_at_path_mut(&mut roots, current_path);
+            stack.push(OpenNode {
+                indent,
+                content_column: indent + (trimmed.len() - body.len()),
+                path,
+                in_fence: opens_fence(body),
+            });
+        } else if let Some(open) = stack.last_mut() {
+            let current = node_at_path_mut(&mut roots, &open.path);
             current.content.push('\n');
-            current.content.push_str(trimmed);
+            current.content.push_str(dedent(line, open.content_column));
+            if opens_fence(line) {
+                open.in_fence = true;
+            }
         } else {
             let idx = roots.len();
             roots.push(MarkdownNode {
                 content: trimmed.to_string(),
                 children: Vec::new(),
             });
-            stack.push((indent, vec![idx]));
+            stack.push(OpenNode {
+                indent,
+                content_column: indent,
+                path: vec![idx],
+                in_fence: opens_fence(trimmed),
+            });
         }
     }
 
@@ -781,6 +802,39 @@ fn node_at_path_mut<'a>(roots: &'a mut [MarkdownNode], path: &[usize]) -> &'a mu
         cur = &mut cur.children[idx];
     }
     cur
+}
+
+struct OpenNode {
+    indent: usize,
+    content_column: usize,
+    path: Vec<usize>,
+    in_fence: bool,
+}
+
+fn opens_fence(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") && !trimmed.trim_start_matches('`').contains("```")
+}
+
+fn closes_fence(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.len() >= 3 && trimmed.bytes().all(|b| b == b'`')
+}
+
+fn dedent(line: &str, column: usize) -> &str {
+    let mut width = 0;
+    for (index, b) in line.bytes().enumerate() {
+        let step = match b {
+            b' ' => 1,
+            b'\t' => 2,
+            _ => return &line[index..],
+        };
+        if width + step > column {
+            return &line[index..];
+        }
+        width += step;
+    }
+    ""
 }
 
 fn leading_indent(line: &str) -> usize {

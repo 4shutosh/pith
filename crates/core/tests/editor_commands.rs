@@ -261,11 +261,13 @@ fn rows_carry_rendered_spans_from_the_core_tokenizer() -> Result<()> {
         page_id: Some(habits.id),
         title: "Atomic Habits".to_string(),
         source: "[[Atomic Habits]]".to_string(),
+        deleted: false,
     }));
     assert!(spans.contains(&RenderedSpan::Tag {
         page_id: Some(books.id),
         title: "books".to_string(),
         source: "#books".to_string(),
+        deleted: false,
     }));
     assert!(spans.contains(&RenderedSpan::Code("`[[not-a-link]]`".to_string())));
     assert!(spans.contains(&RenderedSpan::BlockRef {

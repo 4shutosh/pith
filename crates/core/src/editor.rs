@@ -325,8 +325,17 @@ impl Store {
     }
 
     pub fn reveal_block(&mut self, id: Id, meta: &TxMeta) -> Result<u64> {
+        Ok(self.reveal_block_location(id, meta)?.visible_index)
+    }
+
+    pub fn reveal_block_location(
+        &mut self,
+        id: Id,
+        meta: &TxMeta,
+    ) -> Result<crate::types::BlockLocation> {
+        let block = self.live_block(id)?;
         let mut expand = Vec::new();
-        let mut parent = self.live_block(id)?.parent_id;
+        let mut parent = block.parent_id;
         while let Some(parent_id) = parent {
             let ancestor = self.live_block(parent_id)?;
             if ancestor.collapsed {
@@ -340,7 +349,96 @@ impl Store {
         if !expand.is_empty() {
             self.apply_ops(&expand, meta)?;
         }
-        self.visible_index(id)?.ok_or(Error::NotFound(id))
+        let visible_index = self.visible_index(id)?.ok_or(Error::NotFound(id))?;
+        Ok(crate::types::BlockLocation {
+            page_id: block.page_id,
+            visible_index,
+        })
+    }
+
+    pub fn set_all_collapsed(
+        &mut self,
+        page_id: Id,
+        root_block_id: Option<Id>,
+        collapsed: bool,
+        meta: &TxMeta,
+    ) -> Result<u32> {
+        let live_blocks = self.list_live_blocks(page_id)?;
+        let mut has_children: HashSet<Id> = HashSet::new();
+        for block in &live_blocks {
+            if let Some(pid) = block.parent_id {
+                has_children.insert(pid);
+            }
+        }
+        let in_scope: HashSet<Id> = match root_block_id {
+            Some(root_id) => {
+                let mut by_parent: HashMap<Option<Id>, Vec<Id>> = HashMap::new();
+                for block in &live_blocks {
+                    by_parent.entry(block.parent_id).or_default().push(block.id);
+                }
+                let mut scope = HashSet::new();
+                let mut stack: Vec<Id> = by_parent.get(&Some(root_id)).cloned().unwrap_or_default();
+                while let Some(id) = stack.pop() {
+                    if scope.insert(id)
+                        && let Some(kids) = by_parent.get(&Some(id))
+                    {
+                        stack.extend(kids.iter().copied());
+                    }
+                }
+                scope
+            }
+            None => live_blocks.iter().map(|b| b.id).collect(),
+        };
+        let ops: Vec<Op> = live_blocks
+            .iter()
+            .filter(|b| {
+                in_scope.contains(&b.id) && has_children.contains(&b.id) && b.collapsed != collapsed
+            })
+            .map(|b| Op::SetCollapsed {
+                id: b.id,
+                collapsed,
+            })
+            .collect();
+        let count = ops.len() as u32;
+        if !ops.is_empty() {
+            self.apply_ops(&ops, meta)?;
+        }
+        Ok(count)
+    }
+
+    pub fn link_unlinked_reference(
+        &mut self,
+        block_id: Id,
+        target_page_id: Id,
+        meta: &TxMeta,
+    ) -> Result<Option<ApplyResult>> {
+        let block = self.live_block(block_id)?;
+        let Some(page) = self.get_page(target_page_id)? else {
+            return Ok(None);
+        };
+        if page.deleted_at.is_some() {
+            return Ok(None);
+        }
+        let rendered = self.render_content(&block.content)?;
+        let Some((byte_start, byte_end, _, _)) =
+            parser::find_unlinked_match(&rendered, &page.title)
+        else {
+            return Ok(None);
+        };
+        let mut updated = String::with_capacity(rendered.len() + 4);
+        updated.push_str(&rendered[..byte_start]);
+        updated.push_str(&format!("[[{target_page_id}]]"));
+        updated.push_str(&rendered[byte_end..]);
+        let content = self.pin_links(&updated, &[block_id])?;
+        let result = self.apply_ops(
+            &[Op::UpdateBlock {
+                id: block_id,
+                content,
+                expected_version: Some(block.version),
+            }],
+            meta,
+        )?;
+        Ok(Some(result))
     }
 
     pub fn paste_text(

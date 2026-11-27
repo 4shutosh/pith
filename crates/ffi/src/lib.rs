@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use pith_core::display::{BlockDisplay, RunStyle};
 use pith_core::journal::{local_time_of_day, resolve_journal_date, shift_journal_date};
 use pith_core::parser::{
     self, CompletionContext, CompletionKind, HighlightKind, InlineFormat, SlashClock, SlashCommand,
@@ -7,8 +8,9 @@ use pith_core::parser::{
 };
 use pith_core::snippet::Segment;
 use pith_core::{
-    ApplyResult, Backlink, ChangeEntry, ChangeFeed, EditOutcome, Error, FlatBlockRow, Id, Op,
-    Origin, Page, PageSummary, PageWindow, RenderedSpan, SearchHit, Store, TxMeta, order,
+    ApplyResult, Backlink, BlockKind, BlockLocation, BlockProp, ChangeEntry, ChangeFeed,
+    EditOutcome, Error, FlatBlockRow, Id, LinkPreview, Op, Origin, Page, PageMatch, PageSummary,
+    PageWindow, PreviewLine, RenderedSpan, SearchHit, Store, TxMeta, UnlinkedRef, order,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -136,6 +138,49 @@ impl From<PageSummary> for FfiPageSummary {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiBlockKind {
+    Paragraph,
+    Heading {
+        level: u8,
+    },
+    CodeBlock {
+        language: Option<String>,
+        code: String,
+    },
+    Quote,
+    Divider,
+}
+
+impl From<BlockKind> for FfiBlockKind {
+    fn from(kind: BlockKind) -> Self {
+        match kind {
+            BlockKind::Paragraph => Self::Paragraph,
+            BlockKind::Heading { level } => Self::Heading { level },
+            BlockKind::CodeBlock { language, code } => Self::CodeBlock { language, code },
+            BlockKind::Quote => Self::Quote,
+            BlockKind::Divider => Self::Divider,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiBlockProp {
+    pub key: String,
+    pub value: String,
+    pub value_spans: Vec<FfiSpan>,
+}
+
+impl From<BlockProp> for FfiBlockProp {
+    fn from(prop: BlockProp) -> Self {
+        Self {
+            key: prop.key,
+            value: prop.value,
+            value_spans: prop.value_spans.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct FfiFlatBlockRow {
     pub id: String,
@@ -146,6 +191,9 @@ pub struct FfiFlatBlockRow {
     pub raw_content: String,
     pub rendered_content: String,
     pub spans: Vec<FfiSpan>,
+    pub kind: FfiBlockKind,
+    pub props: Vec<FfiBlockProp>,
+    pub display: FfiBlockDisplay,
     pub collapsed: bool,
     pub has_children: bool,
     pub version: i64,
@@ -162,9 +210,190 @@ impl From<FlatBlockRow> for FfiFlatBlockRow {
             raw_content: row.raw_content,
             rendered_content: row.rendered_content,
             spans: row.spans.into_iter().map(Into::into).collect(),
+            kind: row.kind.into(),
+            props: row.props.into_iter().map(Into::into).collect(),
+            display: row.display.into(),
             collapsed: row.collapsed,
             has_children: row.has_children,
             version: row.version,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiRunStyle {
+    Plain,
+    Marker,
+    Code,
+    Bold,
+    Italic,
+    Strike,
+    Highlight,
+    ExternalLink {
+        url: String,
+    },
+    Link {
+        page_id: Option<String>,
+        deleted: bool,
+    },
+    Tag {
+        page_id: Option<String>,
+        deleted: bool,
+    },
+    BlockRef {
+        block_id: String,
+    },
+}
+
+impl From<RunStyle> for FfiRunStyle {
+    fn from(style: RunStyle) -> Self {
+        match style {
+            RunStyle::Plain => Self::Plain,
+            RunStyle::Marker => Self::Marker,
+            RunStyle::Code => Self::Code,
+            RunStyle::Bold => Self::Bold,
+            RunStyle::Italic => Self::Italic,
+            RunStyle::Strike => Self::Strike,
+            RunStyle::Highlight => Self::Highlight,
+            RunStyle::ExternalLink { url } => Self::ExternalLink { url },
+            RunStyle::Link { page_id, deleted } => Self::Link {
+                page_id: page_id.map(|id| id.to_string()),
+                deleted,
+            },
+            RunStyle::Tag { page_id, deleted } => Self::Tag {
+                page_id: page_id.map(|id| id.to_string()),
+                deleted,
+            },
+            RunStyle::BlockRef { block_id } => Self::BlockRef {
+                block_id: block_id.to_string(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiDisplayRun {
+    pub display: String,
+    pub source: String,
+    pub style: FfiRunStyle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiBlockDisplay {
+    pub task_state: Option<String>,
+    pub prefix: String,
+    pub runs: Vec<FfiDisplayRun>,
+}
+
+impl From<BlockDisplay> for FfiBlockDisplay {
+    fn from(display: BlockDisplay) -> Self {
+        Self {
+            task_state: display.task_state,
+            prefix: display.prefix,
+            runs: display
+                .runs
+                .into_iter()
+                .map(|run| FfiDisplayRun {
+                    display: run.display,
+                    source: run.source,
+                    style: run.style.into(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiPageMatch {
+    pub block_id: String,
+    pub start: u32,
+    pub len: u32,
+}
+
+impl From<PageMatch> for FfiPageMatch {
+    fn from(m: PageMatch) -> Self {
+        Self {
+            block_id: m.block_id.to_string(),
+            start: m.start,
+            len: m.len,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiBlockLocation {
+    pub page_id: String,
+    pub visible_index: u64,
+}
+
+impl From<BlockLocation> for FfiBlockLocation {
+    fn from(loc: BlockLocation) -> Self {
+        Self {
+            page_id: loc.page_id.to_string(),
+            visible_index: loc.visible_index,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiPreviewLine {
+    pub depth: u32,
+    pub spans: Vec<FfiSpan>,
+}
+
+impl From<PreviewLine> for FfiPreviewLine {
+    fn from(line: PreviewLine) -> Self {
+        Self {
+            depth: line.depth,
+            spans: line.spans.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiLinkPreview {
+    pub title: String,
+    pub deleted: bool,
+    pub lines: Vec<FfiPreviewLine>,
+    pub total_blocks: u64,
+    pub backlink_count: u64,
+    pub parent_path: Vec<String>,
+}
+
+impl From<LinkPreview> for FfiLinkPreview {
+    fn from(p: LinkPreview) -> Self {
+        Self {
+            title: p.title,
+            deleted: p.deleted,
+            lines: p.lines.into_iter().map(Into::into).collect(),
+            total_blocks: p.total_blocks,
+            backlink_count: p.backlink_count,
+            parent_path: p.parent_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiUnlinkedRef {
+    pub block_id: String,
+    pub page_id: String,
+    pub page_title: String,
+    pub rendered_content: String,
+    pub spans: Vec<FfiSpan>,
+    pub match_start: u32,
+    pub match_len: u32,
+}
+
+impl From<UnlinkedRef> for FfiUnlinkedRef {
+    fn from(r: UnlinkedRef) -> Self {
+        Self {
+            block_id: r.block_id.to_string(),
+            page_id: r.page_id.to_string(),
+            page_title: r.page_title,
+            rendered_content: r.rendered_content,
+            spans: r.spans.into_iter().map(Into::into).collect(),
+            match_start: r.match_start,
+            match_len: r.match_len,
         }
     }
 }
@@ -484,11 +713,13 @@ pub enum FfiSpan {
         page_id: Option<String>,
         title: String,
         source: String,
+        deleted: bool,
     },
     Tag {
         page_id: Option<String>,
         title: String,
         source: String,
+        deleted: bool,
     },
     BlockRef {
         block_id: String,
@@ -514,19 +745,23 @@ impl From<RenderedSpan> for FfiSpan {
                 page_id,
                 title,
                 source,
+                deleted,
             } => Self::PageLink {
                 page_id: page_id.map(|id| id.to_string()),
                 title,
                 source,
+                deleted,
             },
             RenderedSpan::Tag {
                 page_id,
                 title,
                 source,
+                deleted,
             } => Self::Tag {
                 page_id: page_id.map(|id| id.to_string()),
                 title,
                 source,
+                deleted,
             },
             RenderedSpan::BlockRef {
                 block_id,
@@ -736,6 +971,97 @@ impl PithGraph {
         let block_id = parse_id(&block_id)?;
         let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
         Ok(store.reveal_block(block_id, &meta.into())?)
+    }
+
+    pub fn reveal_block_location(
+        &self,
+        block_id: String,
+        meta: FfiTxMeta,
+    ) -> Result<FfiBlockLocation, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.reveal_block_location(block_id, &meta.into())?.into())
+    }
+
+    pub fn set_all_collapsed(
+        &self,
+        page_id: String,
+        root_block_id: Option<String>,
+        collapsed: bool,
+        meta: FfiTxMeta,
+    ) -> Result<u32, FfiError> {
+        let page_id = parse_id(&page_id)?;
+        let root_block_id = root_block_id.as_deref().map(parse_id).transpose()?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.set_all_collapsed(page_id, root_block_id, collapsed, &meta.into())?)
+    }
+
+    pub fn find_in_page(
+        &self,
+        page_id: String,
+        root_block_id: Option<String>,
+        query: String,
+    ) -> Result<Vec<FfiPageMatch>, FfiError> {
+        let page_id = parse_id(&page_id)?;
+        let root_block_id = root_block_id.as_deref().map(parse_id).transpose()?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .find_in_page(page_id, root_block_id, &query)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub fn preview_page(
+        &self,
+        page_id: String,
+        max_lines: u32,
+    ) -> Result<Option<FfiLinkPreview>, FfiError> {
+        let page_id = parse_id(&page_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .preview_page(page_id, max_lines as usize)?
+            .map(Into::into))
+    }
+
+    pub fn preview_block(
+        &self,
+        block_id: String,
+        max_lines: u32,
+    ) -> Result<Option<FfiLinkPreview>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .preview_block(block_id, max_lines as usize)?
+            .map(Into::into))
+    }
+
+    pub fn unlinked_references(
+        &self,
+        page_id: String,
+        limit: u32,
+    ) -> Result<Vec<FfiUnlinkedRef>, FfiError> {
+        let page_id = parse_id(&page_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .unlinked_references(page_id, limit as usize)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub fn link_unlinked_reference(
+        &self,
+        block_id: String,
+        target_page_id: String,
+        meta: FfiTxMeta,
+    ) -> Result<Option<FfiApplyResult>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let target_page_id = parse_id(&target_page_id)?;
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .link_unlinked_reference(block_id, target_page_id, &meta.into())?
+            .map(Into::into))
     }
 
     pub fn read_block_window(

@@ -1288,3 +1288,201 @@ fn is_tag_boundary(content: &str, hash_idx: usize) -> bool {
 fn is_tag_char(ch: char) -> bool {
     !ch.is_whitespace() && !TAG_DELIMITERS.contains(&ch)
 }
+
+pub fn classify_block(rendered: &str) -> crate::types::BlockKind {
+    let trimmed = rendered.trim();
+    if trimmed.is_empty() {
+        return crate::types::BlockKind::Paragraph;
+    }
+    if !trimmed.contains('\n')
+        && trimmed.len() >= 3
+        && (trimmed.bytes().all(|b| b == b'-')
+            || trimmed.bytes().all(|b| b == b'*')
+            || trimmed.bytes().all(|b| b == b'_'))
+    {
+        return crate::types::BlockKind::Divider;
+    }
+    if trimmed.starts_with("```") && scan_fenced_code(trimmed, 0) == Some(trimmed.len()) {
+        let first_end = trimmed.find('\n').unwrap_or(trimmed.len());
+        let opening = trimmed[..first_end].trim_start_matches('`').trim();
+        let language = if opening.is_empty() {
+            None
+        } else {
+            Some(opening.to_string())
+        };
+        let body = if first_end < trimmed.len() {
+            let after_open = &trimmed[first_end + 1..];
+            if let Some(last_nl) = after_open.rfind('\n') {
+                let last_line = after_open[last_nl + 1..].trim();
+                if last_line.len() >= 3 && last_line.bytes().all(|b| b == b'`') {
+                    &after_open[..last_nl]
+                } else {
+                    after_open
+                }
+            } else {
+                let last_line = after_open.trim();
+                if last_line.len() >= 3 && last_line.bytes().all(|b| b == b'`') {
+                    ""
+                } else {
+                    after_open
+                }
+            }
+        } else {
+            ""
+        };
+        return crate::types::BlockKind::CodeBlock {
+            language,
+            code: body.to_string(),
+        };
+    }
+    let first_line = rendered.lines().next().unwrap_or_default();
+    let hashes = first_line.bytes().take_while(|&b| b == b'#').count();
+    if (1..=3).contains(&hashes) && first_line.as_bytes().get(hashes) == Some(&b' ') {
+        return crate::types::BlockKind::Heading {
+            level: hashes as u8,
+        };
+    }
+    if first_line.starts_with("> ") || first_line == ">" {
+        return crate::types::BlockKind::Quote;
+    }
+    crate::types::BlockKind::Paragraph
+}
+
+pub fn split_body_and_prop_lines(content: &str) -> (String, Vec<(String, String)>) {
+    let mut body_lines: Vec<&str> = Vec::new();
+    let mut props: Vec<(String, String)> = Vec::new();
+    let mut in_fence = false;
+    let mut fence_ticks = 0usize;
+
+    for line in content.split('\n') {
+        let trimmed = line.trim();
+        if !in_fence && trimmed.starts_with("```") {
+            in_fence = true;
+            fence_ticks = trimmed.bytes().take_while(|&b| b == b'`').count();
+            body_lines.push(line);
+            continue;
+        }
+        if in_fence {
+            body_lines.push(line);
+            let ticks = trimmed.bytes().take_while(|&b| b == b'`').count();
+            if ticks >= fence_ticks && trimmed.bytes().all(|b| b == b'`') {
+                in_fence = false;
+            }
+            continue;
+        }
+        if let Some((key, value)) = parse_prop_line(line) {
+            props.push((key.to_string(), value.to_string()));
+        } else {
+            body_lines.push(line);
+        }
+    }
+
+    while body_lines.last().is_some_and(|l| l.is_empty()) {
+        body_lines.pop();
+    }
+    (body_lines.join("\n"), props)
+}
+
+pub fn find_case_insensitive_matches(text: &str, query: &str) -> Vec<(u32, u32)> {
+    let needle: Vec<char> = query.to_lowercase().chars().collect();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut folded: Vec<char> = Vec::with_capacity(text.len());
+    let mut orig_index: Vec<u32> = Vec::with_capacity(text.len());
+    for (scalar_idx, ch) in text.chars().enumerate() {
+        for lower in ch.to_lowercase() {
+            folded.push(lower);
+            orig_index.push(scalar_idx as u32);
+        }
+    }
+    let mut matches = Vec::new();
+    if needle.len() > folded.len() {
+        return matches;
+    }
+    let mut i = 0;
+    while i + needle.len() <= folded.len() {
+        if folded[i..i + needle.len()] == needle[..] {
+            let start = orig_index[i];
+            let end = if i + needle.len() < orig_index.len() {
+                orig_index[i + needle.len()]
+            } else {
+                text.chars().count() as u32
+            };
+            matches.push((start, end.saturating_sub(start)));
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    matches
+}
+
+pub fn find_unlinked_match(rendered: &str, title: &str) -> Option<(usize, usize, u32, u32)> {
+    let needle: Vec<char> = title.to_lowercase().chars().collect();
+    if needle.is_empty() {
+        return None;
+    }
+    for segment in prose_segments(rendered) {
+        if let Some((start, end)) = word_match(segment, &needle) {
+            let base = offset_within(rendered, segment);
+            let byte_start = base + start;
+            let byte_end = base + end;
+            let scalar_start = rendered[..byte_start].chars().count() as u32;
+            let scalar_len = rendered[byte_start..byte_end].chars().count() as u32;
+            return Some((byte_start, byte_end, scalar_start, scalar_len));
+        }
+    }
+    None
+}
+
+fn prose_segments(content: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for span in tokenize(content) {
+        let Span::Text(text) = span else { continue };
+        for token in tokenize_inline(text) {
+            match token {
+                InlineToken::Text(t) => out.push(t),
+                InlineToken::Bold { inner, .. }
+                | InlineToken::Italic { inner, .. }
+                | InlineToken::Strike { inner, .. }
+                | InlineToken::Highlight { inner, .. } => out.push(inner),
+                InlineToken::ExternalLink { .. } => {}
+            }
+        }
+    }
+    out
+}
+
+fn offset_within(outer: &str, inner: &str) -> usize {
+    inner.as_ptr() as usize - outer.as_ptr() as usize
+}
+
+fn word_match(segment: &str, needle: &[char]) -> Option<(usize, usize)> {
+    let chars: Vec<(usize, char)> = segment.char_indices().collect();
+    let mut folded: Vec<char> = Vec::with_capacity(chars.len());
+    let mut origin: Vec<usize> = Vec::with_capacity(chars.len());
+    for (index, &(_, ch)) in chars.iter().enumerate() {
+        for lower in ch.to_lowercase() {
+            folded.push(lower);
+            origin.push(index);
+        }
+    }
+    if needle.len() > folded.len() {
+        return None;
+    }
+    for i in 0..=folded.len() - needle.len() {
+        if folded[i..i + needle.len()] != needle[..] {
+            continue;
+        }
+        let start = origin[i];
+        let end = origin.get(i + needle.len()).copied().unwrap_or(chars.len());
+        let left_ok = start == 0 || !chars[start - 1].1.is_alphanumeric();
+        let right_ok = end == chars.len() || !chars[end].1.is_alphanumeric();
+        if left_ok && right_ok {
+            let byte_end = chars.get(end).map_or(segment.len(), |&(b, _)| b);
+            return Some((chars[start].0, byte_end));
+        }
+    }
+    None
+}

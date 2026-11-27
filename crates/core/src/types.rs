@@ -194,11 +194,13 @@ pub enum RenderedSpan {
         page_id: Option<Id>,
         title: String,
         source: String,
+        deleted: bool,
     },
     Tag {
         page_id: Option<Id>,
         title: String,
         source: String,
+        deleted: bool,
     },
     BlockRef {
         block_id: Id,
@@ -240,6 +242,27 @@ pub struct PropRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockKind {
+    Paragraph,
+    Heading {
+        level: u8,
+    },
+    CodeBlock {
+        language: Option<String>,
+        code: String,
+    },
+    Quote,
+    Divider,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockProp {
+    pub key: String,
+    pub value: String,
+    pub value_spans: Vec<RenderedSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlatBlockRow {
     pub id: Id,
     pub page_id: Id,
@@ -249,9 +272,53 @@ pub struct FlatBlockRow {
     pub raw_content: String,
     pub rendered_content: String,
     pub spans: Vec<RenderedSpan>,
+    pub kind: BlockKind,
+    pub props: Vec<BlockProp>,
+    pub body_spans: Option<Vec<RenderedSpan>>,
+    pub display: crate::display::BlockDisplay,
     pub collapsed: bool,
     pub has_children: bool,
     pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageMatch {
+    pub block_id: Id,
+    pub start: u32,
+    pub len: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockLocation {
+    pub page_id: Id,
+    pub visible_index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewLine {
+    pub depth: u32,
+    pub spans: Vec<RenderedSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkPreview {
+    pub title: String,
+    pub deleted: bool,
+    pub lines: Vec<PreviewLine>,
+    pub total_blocks: u64,
+    pub backlink_count: u64,
+    pub parent_path: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnlinkedRef {
+    pub block_id: Id,
+    pub page_id: Id,
+    pub page_title: String,
+    pub rendered_content: String,
+    pub spans: Vec<RenderedSpan>,
+    pub match_start: u32,
+    pub match_len: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
