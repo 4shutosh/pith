@@ -1,4 +1,7 @@
 public enum PaletteCommand: String, CaseIterable, Equatable {
+    case findInPage
+    case expandAll
+    case collapseAll
     case toggleFavorite
     case renamePage
     case deletePage
@@ -13,6 +16,9 @@ public enum PaletteCommand: String, CaseIterable, Equatable {
 
     public var shortcut: String? {
         switch self {
+        case .findInPage: return "⌘F"
+        case .expandAll: return "⌥⌘."
+        case .collapseAll: return "⇧⌘."
         case .toggleFavorite: return "⌘D"
         case .renamePage: return "⇧⌘R"
         case .deletePage: return nil
@@ -29,6 +35,9 @@ public enum PaletteCommand: String, CaseIterable, Equatable {
 
     var keywords: String {
         switch self {
+        case .findInPage: return "find search page text highlight"
+        case .expandAll: return "expand unfold open all blocks children"
+        case .collapseAll: return "collapse fold close all blocks children"
         case .toggleFavorite: return "favorite star pin bookmark"
         case .renamePage: return "rename title page"
         case .deletePage: return "delete remove trash page"

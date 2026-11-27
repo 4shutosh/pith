@@ -12,25 +12,43 @@ struct OutlinerView: View {
     @FocusState private var titleFieldFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    HStack(spacing: 0) {
-                        content
-                            .frame(width: contentWidth, alignment: .leading)
-                            .padding(.leading, contentLeading)
-                            .padding(.top, 58)
-                            .padding(.bottom, 140)
-                        Spacer(minLength: 0)
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        HStack(spacing: 0) {
+                            content
+                                .frame(width: contentWidth, alignment: .leading)
+                                .padding(.leading, contentLeading)
+                                .padding(.top, 58)
+                                .padding(.bottom, 140)
+                            Spacer(minLength: 0)
+                        }
                     }
-                }
-                .onChange(of: controller.focusedBlockId) { newId in
-                    if let id = newId {
-                        proxy.scrollTo(id)
+                    .onChange(of: controller.focusedBlockId) { newId in
+                        if let id = newId {
+                            proxy.scrollTo(id)
+                        }
+                    }
+                    .onChange(of: controller.scrollTargetSeq) { _ in
+                        if let id = controller.scrollTargetBlockId {
+                            withAnimation(Motion.fast) {
+                                proxy.scrollTo(id, anchor: .center)
+                            }
+                        }
                     }
                 }
             }
+
+            if controller.isFindOpen {
+                FindBar(controller: controller)
+                    .padding(.top, 44)
+                    .padding(.trailing, 24)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .zIndex(5)
+            }
         }
+        .animation(Motion.fast, value: controller.isFindOpen)
         .keyScope(.screen) { handleKey($0) }
         .environment(\.openURL, OpenURLAction { url in
             if let pageId = InlineFormatter.pageId(from: url) {
@@ -154,6 +172,14 @@ struct OutlinerView: View {
             if !controller.backlinks.isEmpty {
                 LinkedReferences(controller: controller)
                     .padding(.top, 52)
+            }
+
+            if controller.selectedPageId != nil,
+               !controller.isJournalStream,
+               controller.zoomedBlockId == nil,
+               controller.currentPage?.journalDay == nil {
+                UnlinkedReferences(controller: controller)
+                    .padding(.top, controller.backlinks.isEmpty ? 52 : 24)
             }
         }
         .onChange(of: controller.selectedPageId) { _ in
@@ -292,56 +318,25 @@ private struct OutlineRow: View {
     private static let rowPadding: CGFloat = 4
 
     var body: some View {
-        let presentation = BlockPresentation.runs(row.spans)
+        let presentation = BlockPresentation.runs(row.display)
+        let rowFindMatches = controller.findMatches(in: row.id)
+        let activeFindOrdinal = controller.activeFindOrdinal(in: row.id)
+
         HStack(alignment: .top, spacing: 0) {
             disclosure
-                .frame(width: Self.disclosureWidth, height: BlockStyle.lineHeight)
+                .frame(width: Self.disclosureWidth, height: markerHeight)
             marker(presentation.status)
-                .frame(width: Self.markerWidth, height: BlockStyle.lineHeight)
-            BlockTextView(
-                blockId: row.id,
-                isEditing: isFocused,
-                display: BlockStyle.display(presentation.runs, closed: presentation.status?.isClosed ?? false),
-                runs: presentation.runs,
-                text: Binding(get: { controller.draftText }, set: { controller.draftText = $0 }),
-                requestedCursorOffset: cursorOffset,
-                cursorRequestSeq: cursorSeq,
-                onActivate: { controller.focusBlock(row.id, cursorOffset: $0) },
-                onShiftClick: { controller.shiftClickBlock(row.id) },
-                onOpenPage: { controller.openPage(id: $0) },
-                onTextChange: { text, composing, caret in
-                    controller.updateDraft(blockId: row.id, text: text, isComposing: composing, caret: caret)
-                },
-                onCaretChange: { caret in
-                    controller.updateCaret(blockId: row.id, caret: caret)
-                },
-                onReturn: { controller.handleReturn(at: $0) },
-                onCycleTask: { controller.cycleTask(caret: $0) },
-                onBackspaceAtStart: { controller.handleBackspaceAtStart() },
-                onTab: { controller.indentFocusedBlock() },
-                onShiftTab: { controller.outdentFocusedBlock() },
-                onMoveUp: { controller.moveFocusUp(column: $0) },
-                onMoveDown: { controller.moveFocusDown(column: $0) },
-                onExtendSelectionUp: { controller.extendSelection(up: true) },
-                onExtendSelectionDown: { controller.extendSelection(up: false) },
-                onEscape: { controller.selectBlockFromFocus() },
-                completion: completion,
-                onCompletionMove: { controller.moveCompletion($0) },
-                onCompletionAccept: { controller.acceptCompletion(at: $0) },
-                onCompletionDismiss: { controller.dismissCompletion() },
-                onMoveBlock: { controller.moveFocusedBlock(up: $0, caret: $1) },
-                onToggleCollapse: { controller.toggleFocusedCollapse(caret: $0) },
-                onCopyMarkdown: {
-                    guard let markdown = controller.focusedBlockMarkdown() else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(markdown, forType: .string)
-                },
-                onPaste: { controller.paste($0, selectionStart: $1, selectionEnd: $2) }
+                .frame(width: Self.markerWidth, height: markerHeight)
+            blockBody(
+                presentation: presentation,
+                findMatches: rowFindMatches,
+                activeFindOrdinal: activeFindOrdinal
             )
             .padding(.leading, Self.textGap)
         }
         .padding(.leading, CGFloat(row.depth) * Self.indent)
-        .padding(.vertical, Self.rowPadding)
+        .padding(.top, topPadding)
+        .padding(.bottom, Self.rowPadding)
         .background {
             if isSelected {
                 RoundedRectangle(cornerRadius: 6)
@@ -354,6 +349,120 @@ private struct OutlineRow: View {
         .background(alignment: .topLeading) { guides }
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+    }
+
+    private var markerHeight: CGFloat {
+        guard !isFocused else { return BlockStyle.lineHeight }
+        switch row.kind {
+        case let .heading(level):
+            return level == 1 ? 30 : (level == 2 ? 26 : BlockStyle.lineHeight)
+        default:
+            return BlockStyle.lineHeight
+        }
+    }
+
+    private var topPadding: CGFloat {
+        guard !isFocused else { return Self.rowPadding }
+        switch row.kind {
+        case let .heading(level):
+            return level == 1 ? 12 : (level == 2 ? 8 : Self.rowPadding)
+        default:
+            return Self.rowPadding
+        }
+    }
+
+    @ViewBuilder
+    private func blockBody(
+        presentation: (status: TaskStatus?, runs: [DisplayRun]),
+        findMatches: [FfiPageMatch],
+        activeFindOrdinal: Int?
+    ) -> some View {
+        if !isFocused, case .divider = row.kind {
+            DividerBlockView {
+                controller.focusBlock(row.id)
+            }
+        } else if !isFocused, case let .codeBlock(language, code) = row.kind {
+            CodeBlockCard(language: language, code: code) {
+                controller.focusBlock(row.id)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if isFocused || !presentation.runs.isEmpty || row.props.isEmpty {
+                    let editor = BlockTextView(
+                        blockId: row.id,
+                        isEditing: isFocused,
+                        display: BlockStyle.display(
+                            presentation.runs,
+                            closed: presentation.status?.isClosed ?? false,
+                            kind: row.kind,
+                            findMatches: findMatches,
+                            activeFindOrdinal: activeFindOrdinal
+                        ),
+                        runs: presentation.runs,
+                        text: Binding(get: { controller.draftText }, set: { controller.draftText = $0 }),
+                        requestedCursorOffset: cursorOffset,
+                        cursorRequestSeq: cursorSeq,
+                        onActivate: { controller.focusBlock(row.id, cursorOffset: $0) },
+                        onShiftClick: { controller.shiftClickBlock(row.id) },
+                        onOpenPage: { controller.openPage(id: $0) },
+                        onRestoreDeletedPage: { controller.requestRestorePage(id: $0, title: $1) },
+                        onOpenBlockRef: { controller.openBlock(id: $0) },
+                        onHoverPreview: { target in
+                            switch target {
+                            case let .page(pageId): return controller.previewPage(id: pageId)
+                            case let .block(blockId): return controller.previewBlock(id: blockId)
+                            }
+                        },
+                        onTextChange: { text, composing, caret in
+                            controller.updateDraft(blockId: row.id, text: text, isComposing: composing, caret: caret)
+                        },
+                        onCaretChange: { caret in
+                            controller.updateCaret(blockId: row.id, caret: caret)
+                        },
+                        onReturn: { controller.handleReturn(at: $0) },
+                        onCycleTask: { controller.cycleTask(caret: $0) },
+                        onBackspaceAtStart: { controller.handleBackspaceAtStart() },
+                        onTab: { controller.indentFocusedBlock() },
+                        onShiftTab: { controller.outdentFocusedBlock() },
+                        onMoveUp: { controller.moveFocusUp(column: $0) },
+                        onMoveDown: { controller.moveFocusDown(column: $0) },
+                        onExtendSelectionUp: { controller.extendSelection(up: true) },
+                        onExtendSelectionDown: { controller.extendSelection(up: false) },
+                        onEscape: { controller.selectBlockFromFocus() },
+                        completion: completion,
+                        onCompletionMove: { controller.moveCompletion($0) },
+                        onCompletionAccept: { controller.acceptCompletion(at: $0) },
+                        onCompletionDismiss: { controller.dismissCompletion() },
+                        onMoveBlock: { controller.moveFocusedBlock(up: $0, caret: $1) },
+                        onToggleCollapse: { controller.toggleFocusedCollapse(caret: $0) },
+                        onCopyMarkdown: {
+                            guard let markdown = controller.focusedBlockMarkdown() else { return }
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(markdown, forType: .string)
+                        },
+                        onPaste: { controller.paste($0, selectionStart: $1, selectionEnd: $2) }
+                    )
+
+                    if !isFocused, case .quote = row.kind {
+                        HStack(alignment: .top, spacing: 10) {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Theme.bullet)
+                                .frame(width: 2)
+                                .padding(.vertical, 3)
+                            editor
+                        }
+                    } else {
+                        editor
+                    }
+                }
+
+                if !isFocused, !row.props.isEmpty {
+                    PropertyChipsRow(props: row.props) {
+                        controller.focusBlock(row.id)
+                    }
+                }
+            }
+        }
     }
 
     private var guides: some View {

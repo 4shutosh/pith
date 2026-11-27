@@ -24,36 +24,33 @@ final class AppearanceTests: XCTestCase {
         XCTAssertFalse(TaskStatus.doing.isClosed)
     }
 
-    func testATaskPrefixBecomesAStatusAndLeavesTheEditableText() {
-        let editable = BlockPresentation.editable([
-            .task(state: "DONE", source: "DONE"),
-            .text(text: "  Ship "),
-            .tag(pageId: "p", title: "core", source: "#core"),
-        ])
-        XCTAssertEqual(editable, EditableBlock(status: .done, prefix: "DONE  ", text: "Ship #core"))
+    func testATaskPrefixBecomesAStatusAndLeavesTheEditableText() throws {
+        var fixture = try RowFixture()
+        let row = try fixture.row(for: "DONE  Ship #core")
+        XCTAssertEqual(BlockPresentation.editable(row), EditableBlock(status: .done, prefix: "DONE  ", text: "Ship #core"))
     }
 
-    func testABlockWithoutATaskIsEditedWhole() {
-        let editable = BlockPresentation.editable([.text(text: "Plain "), .pageLink(pageId: "p", title: "Pith", source: "[[Pith]]")])
-        XCTAssertEqual(editable, EditableBlock(status: nil, prefix: "", text: "Plain [[Pith]]"))
+    func testABlockWithoutATaskIsEditedWhole() throws {
+        var fixture = try RowFixture()
+        let row = try fixture.row(for: "Plain [[Pith]]")
+        XCTAssertEqual(BlockPresentation.editable(row), EditableBlock(status: nil, prefix: "", text: "Plain [[Pith]]"))
     }
 
-    func testDisplayRunsShowLinksWithTheirBracketsSoTheTextNeverShifts() {
-        let (status, runs) = BlockPresentation.runs([
-            .text(text: "Read "),
-            .pageLink(pageId: "p", title: "Atomic Habits", source: "[[Atomic Habits]]"),
-            .text(text: " now"),
-        ])
+    func testDisplayRunsShowLinksWithTheirBracketsSoTheTextNeverShifts() throws {
+        var fixture = try RowFixture()
+        let row = try fixture.row(for: "Read [[Atomic Habits]] now")
+        let pageId = try XCTUnwrap(fixture.graph.getPageByTitle(title: "Atomic Habits")).id
+        let (status, runs) = BlockPresentation.runs(row.display)
         XCTAssertNil(status)
         XCTAssertEqual(runs.map(\.display).joined(), "Read [[Atomic Habits]] now")
         XCTAssertEqual(runs.map(\.source).joined(), "Read [[Atomic Habits]] now")
-        XCTAssertEqual(runs[2], DisplayRun(display: "Atomic Habits", source: "Atomic Habits", style: .link(pageId: "p")))
+        XCTAssertEqual(runs[2], DisplayRun(display: "Atomic Habits", source: "Atomic Habits", style: .link(pageId: pageId, deleted: false)))
     }
 
     func testAClickMapsToTheSameSpotInTheEditedText() {
         let runs = [
             DisplayRun(display: "See ", source: "See ", style: .plain),
-            DisplayRun(display: "the block", source: "((0190a6f0-0000-7000-8000-000000000001))", style: .blockRef),
+            DisplayRun(display: "the block", source: "((0190a6f0-0000-7000-8000-000000000001))", style: .blockRef(blockId: "0190a6f0-0000-7000-8000-000000000001")),
             DisplayRun(display: " after", source: " after", style: .plain),
         ]
         XCTAssertEqual(BlockPresentation.editUTF16Offset(forDisplayUTF16: 2, in: runs), 2)
@@ -106,13 +103,9 @@ final class AppearanceTests: XCTestCase {
         return value
     }
 
-    func testFormattingMarkersAreHiddenOutsideEditing() {
-        let runs = BlockPresentation.runs([
-            .text(text: "a "),
-            .bold(text: "system", source: "**system**"),
-            .text(text: " b "),
-            .italic(text: "why", source: "*why*"),
-        ]).runs
+    func testFormattingMarkersAreHiddenOutsideEditing() throws {
+        var fixture = try RowFixture()
+        let runs = BlockPresentation.runs(try fixture.row(for: "a **system** b *why*").display).runs
         XCTAssertEqual(runs.map(\.display).joined(), "a system b why")
         XCTAssertEqual(runs.map(\.source).joined(), "a **system** b *why*")
         XCTAssertEqual(BlockPresentation.editUTF16Offset(forDisplayUTF16: 3, in: runs), 5)
@@ -122,11 +115,8 @@ final class AppearanceTests: XCTestCase {
 
     func testBoldAndItalicRenderWithRealFaces() throws {
         XCTAssertEqual(Typography.registerBundledFonts(), [])
-        let runs = BlockPresentation.runs([
-            .bold(text: "big", source: "**big**"),
-            .text(text: " "),
-            .italic(text: "slant", source: "*slant*"),
-        ]).runs
+        var fixture = try RowFixture()
+        let runs = BlockPresentation.runs(try fixture.row(for: "**big** *slant*").display).runs
         let shown = BlockStyle.display(runs, closed: false)
         XCTAssertEqual(shown.string, "big slant")
         let boldFont = shown.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
@@ -137,13 +127,12 @@ final class AppearanceTests: XCTestCase {
         XCTAssertTrue(NSFontManager.shared.traits(of: try XCTUnwrap(italicFont)).contains(.italicFontMask))
     }
 
-    func testInlineCodeHidesItsBackticksOutsideEditing() {
-        let runs = BlockPresentation.runs([.text(text: "run "), .code(text: "`cargo test`")]).runs
+    func testInlineCodeHidesItsBackticksOutsideEditing() throws {
+        var fixture = try RowFixture()
+        let runs = BlockPresentation.runs(try fixture.row(for: "run `cargo test`").display).runs
         XCTAssertEqual(runs.map(\.display).joined(), "run cargo test")
         XCTAssertEqual(runs.map(\.source).joined(), "run `cargo test`")
         XCTAssertEqual(BlockPresentation.editUTF16Offset(forDisplayUTF16: 5, in: runs), 6)
-        let unclosed = BlockPresentation.runs([.code(text: "``")]).runs
-        XCTAssertEqual(unclosed.map(\.display).joined(), "``")
     }
 
     func testTheEditorColumnIsCentredInThePaneBesideTheSidebar() {

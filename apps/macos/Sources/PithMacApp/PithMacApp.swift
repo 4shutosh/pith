@@ -120,6 +120,18 @@ struct ContentView: View {
         } message: {
             Text("You can undo this with ⌘Z.")
         }
+        .confirmationDialog(
+            "Restore deleted page “\(controller.pendingPageRestore?.title ?? "")”?",
+            isPresented: Binding(
+                get: { controller.pendingPageRestore != nil },
+                set: { if !$0 { controller.pendingPageRestore = nil } }
+            )
+        ) {
+            Button("Restore & Open") { controller.confirmPendingRestore() }
+            Button("Cancel", role: .cancel) { controller.pendingPageRestore = nil }
+        } message: {
+            Text("Restores the page and its blocks. You can undo this with ⌘Z.")
+        }
         .task {
             await DesignSnapshot.run(
                 controller: controller,
@@ -200,6 +212,17 @@ struct PithMacApp: App {
                     .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandMenu("Page") {
+                Button("Find in Page…") { controller.perform(.findInPage) }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .disabled(!controller.isAvailable(.findInPage))
+                Divider()
+                Button("Expand All Blocks") { controller.perform(.expandAll) }
+                    .keyboardShortcut(".", modifiers: [.command, .option])
+                    .disabled(!controller.isAvailable(.expandAll))
+                Button("Collapse All Blocks") { controller.perform(.collapseAll) }
+                    .keyboardShortcut(".", modifiers: [.command, .shift])
+                    .disabled(!controller.isAvailable(.collapseAll))
+                Divider()
                 Button(controller.currentPage?.favorite == true ? "Remove from Favorites" : "Add to Favorites") {
                     controller.perform(.toggleFavorite)
                 }

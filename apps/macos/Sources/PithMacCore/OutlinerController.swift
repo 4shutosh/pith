@@ -26,6 +26,15 @@ public final class OutlinerController: ObservableObject {
     @Published public var journals: [FfiPage] = []
     @Published public private(set) var renameRequest: UInt64 = 0
     @Published public var pendingPageDelete: FfiPage?
+    @Published public var pendingPageRestore: (id: String, title: String)?
+    @Published public var isFindOpen: Bool = false
+    @Published public var findQuery: String = ""
+    @Published public var findMatches: [FfiPageMatch] = []
+    @Published public var activeFindIndex: Int = 0
+    @Published public var scrollTargetBlockId: String?
+    @Published public var scrollTargetSeq: UInt64 = 0
+    @Published public var unlinkedRefs: [FfiUnlinkedRef] = []
+    @Published public private(set) var unlinkedRefsLoaded: Bool = false
     @Published public private(set) var isJournalStream: Bool = false
     @Published public private(set) var journalSections: [JournalSection] = []
     @Published public private(set) var hasOlderJournals: Bool = false
@@ -185,7 +194,13 @@ public final class OutlinerController: ObservableObject {
             rows = window.rows
             totalVisible = window.totalVisible
             backlinks = try graph.backlinks(targetId: pageId)
+            if unlinkedRefsLoaded {
+                unlinkedRefs = try graph.unlinkedReferences(pageId: pageId, limit: 50)
+            }
             reconcileFocusAndSelection()
+            if isFindOpen {
+                refreshFindMatches(jumpToActive: false)
+            }
             errorMessage = nil
         } catch {
             report(error)
@@ -263,6 +278,9 @@ public final class OutlinerController: ObservableObject {
         windowOffset = 0
         pendingJournalTitle = nil
         selectedPageId = pageId
+        unlinkedRefs = []
+        unlinkedRefsLoaded = false
+        closeFind()
         rows = []
         reload()
     }
@@ -396,7 +414,10 @@ public final class OutlinerController: ObservableObject {
     public func isAvailable(_ command: PaletteCommand) -> Bool {
         let onPage = listScreen == nil && zoomedBlockId == nil
         let editablePage = onPage && !isJournalStream && (currentPage.map { $0.journalDay == nil } ?? false)
+        let inOutliner = listScreen == nil && (!rows.isEmpty || selectedPageId != nil)
         switch command {
+        case .findInPage: return inOutliner
+        case .expandAll, .collapseAll: return inOutliner && selectedPageId != nil
         case .toggleFavorite: return onPage && currentPage != nil
         case .renamePage, .deletePage: return editablePage
         case .previousDay, .nextDay: return isShowingJournal
@@ -409,6 +430,9 @@ public final class OutlinerController: ObservableObject {
     public func perform(_ command: PaletteCommand) {
         guard isAvailable(command) else { return }
         switch command {
+        case .findInPage: openFind()
+        case .expandAll: setAllCollapsed(false)
+        case .collapseAll: setAllCollapsed(true)
         case .toggleFavorite:
             if let page = currentPage { toggleFavorite(page.id) }
         case .renamePage:
@@ -435,8 +459,192 @@ public final class OutlinerController: ObservableObject {
         deletePage(page.id)
     }
 
+    public func requestRestorePage(id: String, title: String) {
+        pendingPageRestore = (id: id, title: title)
+    }
+
+    public func confirmPendingRestore() {
+        guard let pending = pendingPageRestore else { return }
+        pendingPageRestore = nil
+        run {
+            _ = try graph.applyOps(ops: [.restorePage(id: pending.id)], meta: meta("restore page"))
+            selectPage(pending.id)
+        }
+    }
+
+    public func openBlock(id blockId: String) {
+        run {
+            let loc = try graph.revealBlockLocation(blockId: blockId, meta: meta("reveal block"))
+            if selectedPageId != loc.pageId || zoomedBlockId != nil || listScreen != nil || isJournalStream {
+                selectPage(loc.pageId)
+            }
+            if loc.visibleIndex >= windowOffset + pageWindowLimit {
+                windowOffset = loc.visibleIndex - pageWindowLimit / 2
+            }
+            reload()
+            focusBlock(blockId)
+        }
+    }
+
+    public func setAllCollapsed(_ collapsed: Bool) {
+        flushDraft()
+        run {
+            if isJournalStream && zoomedBlockId == nil {
+                for section in journalSections {
+                    if let pid = section.pageId {
+                        _ = try graph.setAllCollapsed(
+                            pageId: pid,
+                            rootBlockId: nil,
+                            collapsed: collapsed,
+                            meta: meta(collapsed ? "collapse all" : "expand all")
+                        )
+                    }
+                }
+            } else if let pageId = selectedPageId {
+                _ = try graph.setAllCollapsed(
+                    pageId: pageId,
+                    rootBlockId: zoomedBlockId,
+                    collapsed: collapsed,
+                    meta: meta(collapsed ? "collapse all" : "expand all")
+                )
+            }
+            reload()
+        }
+    }
+
+    public var activeFindMatch: FfiPageMatch? {
+        guard isFindOpen, findMatches.indices.contains(activeFindIndex) else { return nil }
+        return findMatches[activeFindIndex]
+    }
+
+    public func findMatches(in blockId: String) -> [FfiPageMatch] {
+        guard isFindOpen else { return [] }
+        return findMatches.filter { $0.blockId == blockId }
+    }
+
+    public func activeFindOrdinal(in blockId: String) -> Int? {
+        guard let active = activeFindMatch, active.blockId == blockId else { return nil }
+        var ordinal = 0
+        for (idx, match) in findMatches.enumerated() where match.blockId == blockId {
+            if idx == activeFindIndex {
+                return ordinal
+            }
+            ordinal += 1
+        }
+        return nil
+    }
+
+    public func openFind() {
+        guard listScreen == nil else { return }
+        isFindOpen = true
+        refreshFindMatches(jumpToActive: false)
+    }
+
+    public func closeFind() {
+        isFindOpen = false
+        findQuery = ""
+        findMatches = []
+        activeFindIndex = 0
+    }
+
+    public func updateFindQuery(_ query: String) {
+        findQuery = query
+        activeFindIndex = 0
+        refreshFindMatches(jumpToActive: true)
+    }
+
+    public func nextFindMatch() {
+        guard !findMatches.isEmpty else { return }
+        activeFindIndex = (activeFindIndex + 1) % findMatches.count
+        scrollToActiveFindMatch()
+    }
+
+    public func previousFindMatch() {
+        guard !findMatches.isEmpty else { return }
+        activeFindIndex = (activeFindIndex - 1 + findMatches.count) % findMatches.count
+        scrollToActiveFindMatch()
+    }
+
+    private func refreshFindMatches(jumpToActive: Bool) {
+        let trimmed = findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            findMatches = []
+            activeFindIndex = 0
+            return
+        }
+        run {
+            var found: [FfiPageMatch] = []
+            if isJournalStream && zoomedBlockId == nil {
+                for section in journalSections {
+                    if let pid = section.pageId {
+                        found.append(contentsOf: try graph.findInPage(pageId: pid, rootBlockId: nil, query: trimmed))
+                    }
+                }
+            } else if let pageId = selectedPageId {
+                found = try graph.findInPage(pageId: pageId, rootBlockId: zoomedBlockId, query: trimmed)
+            }
+            findMatches = found
+            if activeFindIndex >= found.count {
+                activeFindIndex = 0
+            }
+            if jumpToActive {
+                scrollToActiveFindMatch()
+            }
+        }
+    }
+
+    private func scrollToActiveFindMatch() {
+        guard let match = activeFindMatch else { return }
+        if !rows.contains(where: { $0.id == match.blockId }) {
+            run {
+                let index = try graph.revealBlock(blockId: match.blockId, meta: meta("reveal match"))
+                if !isJournalStream, index >= windowOffset + pageWindowLimit {
+                    windowOffset = index - pageWindowLimit / 2
+                }
+                reload()
+            }
+        }
+        scrollTargetBlockId = match.blockId
+        scrollTargetSeq &+= 1
+    }
+
+    public func previewPage(id: String) -> FfiLinkPreview? {
+        try? graph.previewPage(pageId: id, maxLines: 6)
+    }
+
+    public func previewBlock(id: String) -> FfiLinkPreview? {
+        try? graph.previewBlock(blockId: id, maxLines: 5)
+    }
+
+    public func loadUnlinkedReferences() {
+        guard let pageId = selectedPageId, !isJournalStream else {
+            unlinkedRefs = []
+            unlinkedRefsLoaded = true
+            return
+        }
+        run {
+            unlinkedRefs = try graph.unlinkedReferences(pageId: pageId, limit: 50)
+            unlinkedRefsLoaded = true
+        }
+    }
+
+    public func linkUnlinkedReference(blockId: String) {
+        guard let pageId = selectedPageId else { return }
+        run {
+            _ = try graph.linkUnlinkedReference(
+                blockId: blockId,
+                targetPageId: pageId,
+                meta: meta("link unlinked reference")
+            )
+            reload()
+        }
+    }
+
     private func title(for command: PaletteCommand) -> String {
         switch command {
+        case .findInPage: return "Find in Page"
+        case .expandAll: return "Expand All Blocks"
+        case .collapseAll: return "Collapse All Blocks"
         case .toggleFavorite: return currentPage?.favorite == true ? "Remove from Favorites" : "Add to Favorites"
         case .renamePage: return "Rename Page"
         case .deletePage: return "Delete Page…"
@@ -758,7 +966,7 @@ public final class OutlinerController: ObservableObject {
     public func ensureFirstBlockAndFocus() {
         let pageRows = isJournalStream ? Array(rows[journalSections.first?.rowRange ?? 0..<0]) : rows
         if let first = pageRows.first {
-            focusBlock(first.id, cursorOffset: TextOffsets.length(BlockPresentation.editable(first.spans).text))
+            focusBlock(first.id, cursorOffset: TextOffsets.length(BlockPresentation.editable(first).text))
             return
         }
         run {
@@ -898,7 +1106,7 @@ public final class OutlinerController: ObservableObject {
             return
         }
         let target = rows[idx - 1]
-        let text = BlockPresentation.editable(target.spans).text
+        let text = BlockPresentation.editable(target).text
         focusBlock(target.id, cursorOffset: TextOffsets.offsetInLastLine(atColumn: column, in: text))
     }
 
@@ -909,7 +1117,7 @@ public final class OutlinerController: ObservableObject {
             return
         }
         let target = rows[idx + 1]
-        let text = BlockPresentation.editable(target.spans).text
+        let text = BlockPresentation.editable(target).text
         focusBlock(target.id, cursorOffset: TextOffsets.offsetInFirstLine(atColumn: column, in: text))
     }
 
@@ -1292,14 +1500,14 @@ public final class OutlinerController: ObservableObject {
     }
 
     private func rebase(on row: FfiFlatBlockRow) {
-        let editable = BlockPresentation.editable(row.spans)
+        let editable = BlockPresentation.editable(row)
         draftBaseVersion = row.version
         draftBaseText = editable.text
         editPrefix = editable.prefix
     }
 
     private func editOffset(fromRendered offset: Int, in row: FfiFlatBlockRow) -> Int {
-        max(0, offset - TextOffsets.length(BlockPresentation.editable(row.spans).prefix))
+        max(0, offset - TextOffsets.length(BlockPresentation.editable(row).prefix))
     }
 
     private func run(_ body: () throws -> Void) {

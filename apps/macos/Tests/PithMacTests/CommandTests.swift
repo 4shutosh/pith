@@ -33,13 +33,13 @@ final class CommandTests: XCTestCase {
 
         XCTAssertEqual(
             titles(controller),
-            ["Add to Favorites", "Rename Page", "Delete Page…", "Go to Journals", "Go to All Pages", "Back", "Toggle Sidebar", "Toggle Light/Dark"]
+            ["Find in Page", "Expand All Blocks", "Collapse All Blocks", "Add to Favorites", "Rename Page", "Delete Page…", "Go to Journals", "Go to All Pages", "Back", "Toggle Sidebar", "Toggle Light/Dark"]
         )
-        XCTAssertEqual(controller.paletteItems.first?.shortcut, "⌘D")
+        XCTAssertEqual(controller.paletteItems.first(where: { $0.command == .toggleFavorite })?.shortcut, "⌘D")
 
         controller.perform(.toggleFavorite)
         XCTAssertEqual(controller.favoritePages.map(\.title), ["Roadmap"])
-        XCTAssertEqual(controller.paletteItems.first?.title, "Remove from Favorites")
+        XCTAssertEqual(controller.paletteItems.first(where: { $0.command == .toggleFavorite })?.title, "Remove from Favorites")
 
         let before = controller.renameRequest
         controller.perform(.renamePage)

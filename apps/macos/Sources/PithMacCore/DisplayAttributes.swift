@@ -3,6 +3,8 @@ import PithCore
 
 public extension NSAttributedString.Key {
     static let pithPageId = NSAttributedString.Key("pithPageId")
+    static let pithDeletedPageTitle = NSAttributedString.Key("pithDeletedPageTitle")
+    static let pithBlockRefId = NSAttributedString.Key("pithBlockRefId")
     static let pithExternalURL = NSAttributedString.Key("pithExternalURL")
 }
 
@@ -102,9 +104,72 @@ public enum BlockStyle {
         .underlineColor: Theme.nsBracket,
     ]
 
-    public static func display(_ runs: [DisplayRun], closed: Bool) -> NSAttributedString {
+    static let h1Font: NSFont = NSFontManager.shared.convert(Typography.nsSans(TypeScale.sectionTitle), toHaveTrait: .boldFontMask)
+    static let h2Font: NSFont = NSFontManager.shared.convert(Typography.nsSans(TypeScale.searchInput), toHaveTrait: .boldFontMask)
+    static let h3Font: NSFont = NSFontManager.shared.convert(Typography.nsSans(TypeScale.block), toHaveTrait: .boldFontMask)
+
+    static let h1Paragraph: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = 30
+        style.maximumLineHeight = 30
+        return style
+    }()
+
+    static let h2Paragraph: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = 26
+        style.maximumLineHeight = 26
+        return style
+    }()
+
+    public static func baseAttributes(for kind: FfiBlockKind) -> [NSAttributedString.Key: Any] {
+        switch kind {
+        case let .heading(level):
+            switch level {
+            case 1:
+                return [
+                    .font: h1Font,
+                    .foregroundColor: Theme.nsTextStrong,
+                    .paragraphStyle: h1Paragraph,
+                    .kern: -0.3,
+                ]
+            case 2:
+                return [
+                    .font: h2Font,
+                    .foregroundColor: Theme.nsTextStrong,
+                    .paragraphStyle: h2Paragraph,
+                    .kern: -0.2,
+                ]
+            default:
+                return [
+                    .font: h3Font,
+                    .foregroundColor: Theme.nsTextStrong,
+                    .paragraphStyle: paragraph,
+                    .baselineOffset: baselineOffset,
+                ]
+            }
+        case .quote:
+            return [
+                .font: font,
+                .foregroundColor: Theme.nsTextSecondary,
+                .paragraphStyle: paragraph,
+                .baselineOffset: baselineOffset,
+            ]
+        case .paragraph, .codeBlock, .divider:
+            return editingAttributes
+        }
+    }
+
+    public static func display(
+        _ runs: [DisplayRun],
+        closed: Bool,
+        kind: FfiBlockKind = .paragraph,
+        findMatches: [FfiPageMatch] = [],
+        activeFindOrdinal: Int? = nil
+    ) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        let base = editingAttributes
+        let base = baseAttributes(for: kind)
+        let isHeading: Bool = if case .heading = kind { true } else { false }
         for run in runs {
             var attributes = base
             switch run.style {
@@ -115,9 +180,13 @@ public enum BlockStyle {
             case .bracket:
                 attributes.merge(BlockStyle.attributes(for: .bracket)) { $1 }
             case .bold:
-                attributes.merge(boldAttributes) { $1 }
+                if !isHeading {
+                    attributes.merge(boldAttributes) { $1 }
+                }
             case .italic:
-                attributes.merge(italicAttributes) { $1 }
+                if !isHeading {
+                    attributes.merge(italicAttributes) { $1 }
+                }
             case .strike:
                 attributes.merge(strikeAttributes) { $1 }
             case .highlight:
@@ -125,14 +194,35 @@ public enum BlockStyle {
             case let .externalLink(url):
                 attributes.merge(externalLinkAttributes) { $1 }
                 attributes[.pithExternalURL] = url
-            case let .link(pageId):
-                attributes[.foregroundColor] = Theme.nsLink
-                attributes[.pithPageId] = pageId
-            case let .tag(pageId):
-                attributes[.foregroundColor] = Theme.nsTag
-                attributes[.pithPageId] = pageId
-            case .blockRef:
+            case let .link(pageId, deleted):
+                if deleted {
+                    attributes[.foregroundColor] = Theme.nsClosedText
+                    attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                    attributes[.strikethroughColor] = Theme.nsClosedStrike
+                    if let pageId {
+                        attributes[.pithPageId] = pageId
+                        attributes[.pithDeletedPageTitle] = run.display
+                    }
+                } else {
+                    attributes[.foregroundColor] = Theme.nsLink
+                    attributes[.pithPageId] = pageId
+                }
+            case let .tag(pageId, deleted):
+                if deleted {
+                    attributes[.foregroundColor] = Theme.nsClosedText
+                    attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                    attributes[.strikethroughColor] = Theme.nsClosedStrike
+                    if let pageId {
+                        attributes[.pithPageId] = pageId
+                        attributes[.pithDeletedPageTitle] = run.display
+                    }
+                } else {
+                    attributes[.foregroundColor] = Theme.nsTag
+                    attributes[.pithPageId] = pageId
+                }
+            case let .blockRef(blockId):
                 attributes.merge(blockRefAttributes) { $1 }
+                attributes[.pithBlockRefId] = blockId
             }
             if closed {
                 attributes[.foregroundColor] = Theme.nsClosedText
@@ -140,6 +230,22 @@ public enum BlockStyle {
                 attributes[.strikethroughColor] = Theme.nsClosedStrike
             }
             result.append(NSAttributedString(string: run.display, attributes: attributes))
+        }
+        let shown = result.string
+        for (ordinal, match) in findMatches.enumerated() {
+            let start = TextOffsets.utf16(fromScalar: Int(match.start), in: shown)
+            let end = TextOffsets.utf16(fromScalar: Int(match.start + match.len), in: shown)
+            guard end > start, end <= (shown as NSString).length else { continue }
+            let range = NSRange(location: start, length: end - start)
+            let isActive = activeFindOrdinal == ordinal
+            result.addAttribute(
+                .backgroundColor,
+                value: isActive ? Theme.nsAccent.withAlphaComponent(0.45) : Theme.nsSelection,
+                range: range
+            )
+            if isActive {
+                result.addAttribute(.foregroundColor, value: Theme.nsTextStrong, range: range)
+            }
         }
         return result
     }

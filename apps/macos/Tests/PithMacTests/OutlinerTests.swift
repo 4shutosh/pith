@@ -295,7 +295,7 @@ final class OutlinerTests: XCTestCase {
         controller.handleReturn(at: TextOffsets.length("Make things work"))
 
         XCTAssertEqual(controller.rows[0].renderedContent, "TODO Make things work")
-        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].spans).status, .todo)
+        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].display).status, .todo)
     }
 
     func testTypingIntoAnEmptyTaskAndHittingReturnBeforeFlushKeepsTheSpace() throws {
@@ -309,7 +309,7 @@ final class OutlinerTests: XCTestCase {
         controller.handleReturn(at: TextOffsets.length("Make things work"))
 
         XCTAssertEqual(controller.rows[0].renderedContent, "TODO Make things work")
-        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].spans).status, .todo)
+        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].display).status, .todo)
     }
 
     func testTypingTodoManuallyDoesNotDoubleThePrefixOnSubsequentSaves() throws {
@@ -321,7 +321,7 @@ final class OutlinerTests: XCTestCase {
         try type(controller, "TODO Make things work")
 
         XCTAssertEqual(controller.rows[0].renderedContent, "TODO Make things work")
-        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].spans).status, .todo)
+        XCTAssertEqual(BlockPresentation.runs(controller.rows[0].display).status, .todo)
     }
 
     func testMultiBlockSelectionSupportsBulkOpsAndSingleStepUndo() throws {

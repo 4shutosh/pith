@@ -55,10 +55,10 @@ public enum InlineFormatter {
             var label = AttributedString(state)
             label.foregroundColor = Theme.textTertiary
             return label
-        case let .pageLink(pageId, title, _):
-            return link(title, pageId: pageId, color: Theme.link, muted: muted)
-        case let .tag(pageId, title, _):
-            return link("#\(title)", pageId: pageId, color: Theme.tag, muted: muted)
+        case let .pageLink(pageId, title, _, deleted):
+            return link(title, pageId: pageId, color: Theme.link, muted: muted || deleted, deleted: deleted)
+        case let .tag(pageId, title, _, deleted):
+            return link("#\(title)", pageId: pageId, color: Theme.tag, muted: muted || deleted, deleted: deleted)
         case let .blockRef(_, text, _):
             var ref = AttributedString(text)
             ref.underlineStyle = Text.LineStyle(pattern: .dash, color: Theme.bullet)
@@ -66,10 +66,13 @@ public enum InlineFormatter {
         }
     }
 
-    private static func link(_ display: String, pageId: String?, color: Color, muted: Bool) -> AttributedString {
+    private static func link(_ display: String, pageId: String?, color: Color, muted: Bool, deleted: Bool) -> AttributedString {
         var span = AttributedString(display)
         span.foregroundColor = muted ? Theme.textTertiary : color
-        if let pageId, let url = URL(string: "pith://page/\(pageId)") {
+        if deleted {
+            span.strikethroughStyle = .single
+        }
+        if let pageId, !deleted, let url = URL(string: "pith://page/\(pageId)") {
             span.link = url
         }
         return span

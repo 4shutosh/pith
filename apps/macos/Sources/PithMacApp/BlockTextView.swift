@@ -7,11 +7,18 @@ final class PithTextView: NSTextView {
     var onActivate: ((Int) -> Void)?
     var onShiftClick: (() -> Void)?
     var onOpenPage: ((String) -> Void)?
+    var onRestoreDeletedPage: ((String, String) -> Void)?
+    var onOpenBlockRef: ((String) -> Void)?
+    var onHoverPreview: ((HoverPreviewTarget) -> FfiLinkPreview?)?
     var onCommandReturn: ((Int) -> Void)?
     var onMoveBlock: ((Bool, Int) -> Void)?
     var onToggleCollapse: ((Int) -> Void)?
     var onCopyMarkdown: (() -> Void)?
     var onPaste: ((String, Int, Int) -> Bool)?
+
+    private var previewTimer: DispatchWorkItem?
+    private var previewPopover: NSPopover?
+    private var activePreviewTarget: HoverPreviewTarget?
 
     private var caret: Int {
         TextOffsets.scalar(fromUTF16: selectedRange().location, in: string)
@@ -90,6 +97,7 @@ final class PithTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        dismissHoverPreview()
         if event.modifierFlags.contains(.shift), !isEditable {
             onShiftClick?()
             return
@@ -100,7 +108,15 @@ final class PithTextView: NSTextView {
         }
         let point = convert(event.locationInWindow, from: nil)
         if let pageId = pageId(at: point) {
-            onOpenPage?(pageId)
+            if let deletedTitle = deletedPageTitle(at: point) {
+                onRestoreDeletedPage?(pageId, deletedTitle)
+            } else {
+                onOpenPage?(pageId)
+            }
+            return
+        }
+        if let blockRefId = blockRefId(at: point) {
+            onOpenBlockRef?(blockRefId)
             return
         }
         if let rawURL = externalURL(at: point), let url = URL(string: rawURL) {
@@ -151,16 +167,69 @@ final class PithTextView: NSTextView {
 
     override func mouseMoved(with event: NSEvent) {
         applyHoverCursor(for: event)
+        updateHoverPreview(for: event)
     }
 
     override func mouseExited(with event: NSEvent) {
         NSCursor.arrow.set()
+        dismissHoverPreview()
+    }
+
+    func dismissHoverPreview() {
+        previewTimer?.cancel()
+        previewTimer = nil
+        activePreviewTarget = nil
+        previewPopover?.close()
+        previewPopover = nil
+    }
+
+    private func updateHoverPreview(for event: NSEvent) {
+        guard !isEditable, onHoverPreview != nil else {
+            dismissHoverPreview()
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point) else {
+            dismissHoverPreview()
+            return
+        }
+        let target: HoverPreviewTarget?
+        if let pageId = pageId(at: point) {
+            target = .page(pageId)
+        } else if let blockId = blockRefId(at: point) {
+            target = .block(blockId)
+        } else {
+            target = nil
+        }
+        guard let target else {
+            dismissHoverPreview()
+            return
+        }
+        if target == activePreviewTarget {
+            return
+        }
+        dismissHoverPreview()
+        activePreviewTarget = target
+        let anchorRect = NSRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.isEditable, self.window != nil,
+                  self.activePreviewTarget == target,
+                  let preview = self.onHoverPreview?(target) else { return }
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            popover.contentViewController = NSHostingController(rootView: HoverPreviewView(preview: preview))
+            popover.show(relativeTo: anchorRect, of: self, preferredEdge: .maxY)
+            self.previewPopover = popover
+        }
+        previewTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     private func applyHoverCursor(for event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard bounds.contains(point) else { return }
-        if !isEditable, pageId(at: point) != nil || externalURL(at: point) != nil {
+        if !isEditable, pageId(at: point) != nil || blockRefId(at: point) != nil || externalURL(at: point) != nil {
             NSCursor.pointingHand.set()
         } else {
             NSCursor.iBeam.set()
@@ -176,7 +245,7 @@ final class PithTextView: NSTextView {
         guard let layout = layoutManager, let container = textContainer, let storage = textStorage,
               storage.length > 0 else { return }
         let full = NSRange(location: 0, length: storage.length)
-        for key in [NSAttributedString.Key.pithPageId, NSAttributedString.Key.pithExternalURL] {
+        for key in [NSAttributedString.Key.pithPageId, NSAttributedString.Key.pithBlockRefId, NSAttributedString.Key.pithExternalURL] {
             storage.enumerateAttribute(key, in: full) { value, range, _ in
                 guard value != nil else { return }
                 let glyphRange = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
@@ -231,6 +300,14 @@ final class PithTextView: NSTextView {
         attribute(.pithPageId, at: point) as? String
     }
 
+    private func deletedPageTitle(at point: NSPoint) -> String? {
+        attribute(.pithDeletedPageTitle, at: point) as? String
+    }
+
+    private func blockRefId(at point: NSPoint) -> String? {
+        attribute(.pithBlockRefId, at: point) as? String
+    }
+
     private func externalURL(at point: NSPoint) -> String? {
         attribute(.pithExternalURL, at: point) as? String
     }
@@ -259,6 +336,9 @@ struct BlockTextView: NSViewRepresentable {
     let onActivate: (Int) -> Void
     var onShiftClick: () -> Void = {}
     let onOpenPage: (String) -> Void
+    var onRestoreDeletedPage: (String, String) -> Void = { _, _ in }
+    var onOpenBlockRef: (String) -> Void = { _ in }
+    var onHoverPreview: ((HoverPreviewTarget) -> FfiLinkPreview?)? = nil
     let onTextChange: (String, Bool, Int) -> Void
     var onCaretChange: (Int) -> Void = { _ in }
     let onReturn: (Int) -> Void
@@ -327,6 +407,9 @@ struct BlockTextView: NSViewRepresentable {
         }
         textView.onShiftClick = onShiftClick
         textView.onOpenPage = onOpenPage
+        textView.onRestoreDeletedPage = onRestoreDeletedPage
+        textView.onOpenBlockRef = onOpenBlockRef
+        textView.onHoverPreview = onHoverPreview
         textView.onCommandReturn = onCycleTask
         textView.onMoveBlock = onMoveBlock
         textView.onToggleCollapse = onToggleCollapse
@@ -334,6 +417,7 @@ struct BlockTextView: NSViewRepresentable {
         textView.onPaste = onPaste
 
         if isEditing {
+            textView.dismissHoverPreview()
             let startedEditing = !textView.isEditable
             if startedEditing {
                 textView.isEditable = true

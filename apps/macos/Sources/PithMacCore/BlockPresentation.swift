@@ -44,9 +44,9 @@ public enum RunStyle: Equatable {
     case strike
     case highlight
     case externalLink(url: String)
-    case link(pageId: String?)
-    case tag(pageId: String?)
-    case blockRef
+    case link(pageId: String?, deleted: Bool)
+    case tag(pageId: String?, deleted: Bool)
+    case blockRef(blockId: String)
 }
 
 public struct DisplayRun: Equatable {
@@ -62,9 +62,11 @@ public struct DisplayRun: Equatable {
 }
 
 public enum BlockPresentation {
-    public static func editable(_ spans: [FfiSpan]) -> EditableBlock {
-        let (status, prefix, rest) = splitTask(spans)
-        return EditableBlock(status: status, prefix: prefix, text: rest.map(source).joined())
+    public static func editable(_ row: FfiFlatBlockRow) -> EditableBlock {
+        let prefix = row.display.prefix
+        let content = row.renderedContent
+        let text = content.hasPrefix(prefix) ? String(content.dropFirst(prefix.count)) : content
+        return EditableBlock(status: row.display.taskState.flatMap(TaskStatus.init(state:)), prefix: prefix, text: text)
     }
 
     public static func combine(prefix: String, body: String) -> String {
@@ -76,9 +78,9 @@ public enum BlockPresentation {
         return prefix + " " + body
     }
 
-    public static func runs(_ spans: [FfiSpan]) -> (status: TaskStatus?, runs: [DisplayRun]) {
-        let (status, _, rest) = splitTask(spans)
-        return (status, rest.flatMap(displayRuns))
+    public static func runs(_ display: FfiBlockDisplay) -> (status: TaskStatus?, runs: [DisplayRun]) {
+        let runs = display.runs.map { DisplayRun(display: $0.display, source: $0.source, style: RunStyle($0.style)) }
+        return (display.taskState.flatMap(TaskStatus.init(state:)), runs)
     }
 
     public static func editUTF16Offset(forDisplayUTF16 index: Int, in runs: [DisplayRun]) -> Int {
@@ -99,92 +101,22 @@ public enum BlockPresentation {
         }
         return editStart
     }
+}
 
-    private static func hiddenMarkers(text: String, source: String, style: RunStyle) -> [DisplayRun] {
-        let marker = String(source.prefix((source.count - text.count) / 2))
-        return [
-            DisplayRun(display: "", source: marker, style: .bracket),
-            DisplayRun(display: text, source: text, style: style),
-            DisplayRun(display: "", source: marker, style: .bracket),
-        ]
-    }
-
-    private static func splitTask(_ spans: [FfiSpan]) -> (TaskStatus?, String, [FfiSpan]) {
-        guard case let .task(state, taskSource)? = spans.first, let status = TaskStatus(state: state) else {
-            return (nil, "", spans)
-        }
-        var rest = Array(spans.dropFirst())
-        var prefix = taskSource
-        if case let .text(text)? = rest.first {
-            let spaces = text.prefix(while: { $0 == " " || $0 == "\t" })
-            prefix += spaces
-            let remainder = String(text.dropFirst(spaces.count))
-            if remainder.isEmpty {
-                rest.removeFirst()
-            } else {
-                rest[0] = .text(text: remainder)
-            }
-        }
-        return (status, prefix, rest)
-    }
-
-    private static func source(_ span: FfiSpan) -> String {
-        switch span {
-        case let .text(text), let .code(text):
-            return text
-        case let .bold(_, source),
-             let .italic(_, source),
-             let .strike(_, source),
-             let .highlight(_, source),
-             let .externalLink(_, _, source),
-             let .task(_, source),
-             let .pageLink(_, _, source),
-             let .tag(_, _, source),
-             let .blockRef(_, _, source):
-            return source
-        }
-    }
-
-    private static func displayRuns(_ span: FfiSpan) -> [DisplayRun] {
-        switch span {
-        case let .text(text):
-            return [DisplayRun(display: text, source: text, style: .plain)]
-        case let .code(text):
-            let ticks = String(text.prefix(while: { $0 == "`" }))
-            guard ticks.count * 2 < text.count, text.hasSuffix(ticks) else {
-                return [DisplayRun(display: text, source: text, style: .code)]
-            }
-            let inner = String(text.dropFirst(ticks.count).dropLast(ticks.count))
-            return [
-                DisplayRun(display: "", source: ticks, style: .bracket),
-                DisplayRun(display: inner, source: inner, style: .code),
-                DisplayRun(display: "", source: ticks, style: .bracket),
-            ]
-        case let .bold(text, source):
-            return hiddenMarkers(text: text, source: source, style: .bold)
-        case let .italic(text, source):
-            return hiddenMarkers(text: text, source: source, style: .italic)
-        case let .strike(text, source):
-            return hiddenMarkers(text: text, source: source, style: .strike)
-        case let .highlight(text, source):
-            return hiddenMarkers(text: text, source: source, style: .highlight)
-        case let .externalLink(label, url, source):
-            return [DisplayRun(display: label, source: source, style: .externalLink(url: url))]
-        case let .task(_, source):
-            return [DisplayRun(display: source, source: source, style: .plain)]
-        case let .pageLink(pageId, title, source):
-            guard source == "[[\(title)]]" else {
-                return [DisplayRun(display: source, source: source, style: .link(pageId: pageId))]
-            }
-            return [
-                DisplayRun(display: "[[", source: "[[", style: .bracket),
-                DisplayRun(display: title, source: title, style: .link(pageId: pageId)),
-                DisplayRun(display: "]]", source: "]]", style: .bracket),
-            ]
-        case let .tag(pageId, _, source):
-            return [DisplayRun(display: source, source: source, style: .tag(pageId: pageId))]
-        case let .blockRef(_, text, source):
-            return [DisplayRun(display: text, source: source, style: .blockRef)]
+extension RunStyle {
+    init(_ style: FfiRunStyle) {
+        switch style {
+        case .plain: self = .plain
+        case .marker: self = .bracket
+        case .code: self = .code
+        case .bold: self = .bold
+        case .italic: self = .italic
+        case .strike: self = .strike
+        case .highlight: self = .highlight
+        case let .externalLink(url): self = .externalLink(url: url)
+        case let .link(pageId, deleted): self = .link(pageId: pageId, deleted: deleted)
+        case let .tag(pageId, deleted): self = .tag(pageId: pageId, deleted: deleted)
+        case let .blockRef(blockId): self = .blockRef(blockId: blockId)
         }
     }
 }
