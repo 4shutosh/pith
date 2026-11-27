@@ -663,3 +663,37 @@ fn bulk_move_with_gaps_moves_each_run_past_its_neighbour() -> Result<()> {
     assert_eq!(f.texts()?, vec!["B", "A", "D", "C", "E"]);
     Ok(())
 }
+
+#[test]
+fn starting_a_page_creates_it_with_its_first_block_in_one_undoable_step() -> Result<()> {
+    let mut store = Store::open_in_memory()?;
+    assert_eq!(store.next_untitled_title()?, "Untitled");
+
+    let cursor = store.change_cursor()?;
+    let outcome = store.start_page("Untitled", &user_meta("new page"))?;
+    let page = store
+        .get_page_by_title("Untitled")?
+        .context("page exists")?;
+    assert_eq!(
+        store
+            .get_block(outcome.focus_block)?
+            .context("block")?
+            .page_id,
+        page.id
+    );
+    assert_eq!(
+        store.changes_after(cursor)?.cursor.txn_seq,
+        cursor.txn_seq + 1
+    );
+    assert_eq!(store.next_untitled_title()?, "Untitled 2");
+
+    store.undo_last(&user_meta("undo"), false)?;
+    assert!(store.get_page_by_title("Untitled")?.is_none());
+    assert_eq!(store.next_untitled_title()?, "Untitled");
+
+    store.start_page("Untitled", &user_meta("again"))?;
+    store.start_page("Untitled 2", &user_meta("second"))?;
+    assert_eq!(store.next_untitled_title()?, "Untitled 3");
+    assert!(store.start_page("Untitled", &user_meta("taken")).is_err());
+    Ok(())
+}

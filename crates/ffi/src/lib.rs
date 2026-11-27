@@ -948,6 +948,16 @@ impl PithGraph {
         Ok(store.start_journal(date.as_deref(), &meta.into())?.into())
     }
 
+    pub fn start_page(&self, title: String, meta: FfiTxMeta) -> Result<FfiEditOutcome, FfiError> {
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.start_page(&title, &meta.into())?.into())
+    }
+
+    pub fn next_untitled_title(&self) -> Result<String, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.next_untitled_title()?)
+    }
+
     pub fn append_block(
         &self,
         page_id: String,

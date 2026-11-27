@@ -66,17 +66,8 @@ struct ContentView: View {
         .frame(maxWidth: .infinity)
         .background(WindowChromeArea(trafficLightCenterY: $trafficLightCenterY))
         .background {
-            HStack(spacing: 0) {
-                if docked {
-                    Theme.sidebar
-                        .frame(width: Self.sidebarWidth)
-                    Theme.divider
-                        .frame(width: 1)
-                    Color.clear
-                } else {
-                    Theme.canvas
-                }
-            }
+            Theme.canvas
+                .opacity(docked ? 0 : 1)
         }
         .animation(Motion.drawer, value: docked)
     }
@@ -155,7 +146,6 @@ struct ContentView: View {
                         )
                     }
                 }
-                .padding(.top, docked ? 0 : topBarHeight)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.canvas)
 

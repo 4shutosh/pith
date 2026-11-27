@@ -108,7 +108,7 @@ struct PageListView: View {
                     }
                     .frame(width: contentWidth, alignment: .leading)
                     .padding(.leading, contentLeading)
-                    .padding(.top, 26)
+                    .padding(.top, EditorLayout.contentTop)
                     .padding(.bottom, 100)
                     Spacer(minLength: 0)
                 }

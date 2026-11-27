@@ -44,8 +44,8 @@ struct Sidebar: View {
                 SearchFieldButton(shortcut: shortcuts.displayString(for: .openPalette)) {
                     withAnimation(Motion.pop) { showSearch = true }
                 }
-                NewSectionIconButton {
-                    beginNewSection()
+                NewPageIconButton {
+                    controller.createNewBlankPage()
                 }
             }
             .padding(.bottom, 12)
@@ -382,7 +382,7 @@ private struct SearchFieldButton: View {
     }
 }
 
-private struct NewSectionIconButton: View {
+private struct NewPageIconButton: View {
     let action: () -> Void
     @State private var isHovered = false
 
@@ -402,8 +402,8 @@ private struct NewSectionIconButton: View {
         .cursor(.pointingHand)
         .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
-        .help("New section")
-        .accessibilityLabel("New section")
+        .help("New page")
+        .accessibilityLabel("New page")
     }
 }
 

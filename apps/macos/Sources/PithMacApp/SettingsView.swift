@@ -38,7 +38,7 @@ struct SettingsView: View {
                 }
                 .frame(width: contentWidth, alignment: .leading)
                 .padding(.leading, contentLeading)
-                .padding(.top, 32)
+                .padding(.top, EditorLayout.contentTop)
                 .padding(.bottom, 120)
                 Spacer(minLength: 0)
             }

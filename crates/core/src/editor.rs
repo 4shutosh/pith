@@ -30,6 +30,31 @@ impl Store {
         self.append_root_block(page_id, ops, "", meta)
     }
 
+    pub fn start_page(&mut self, title: &str, meta: &TxMeta) -> Result<EditOutcome> {
+        let page_id = Id::new();
+        let ops = vec![Op::CreatePage {
+            id: page_id,
+            title: title.to_string(),
+            journal_day: None,
+            document_mode: false,
+        }];
+        self.append_root_block(page_id, ops, "", meta)
+    }
+
+    pub fn next_untitled_title(&self) -> Result<String> {
+        if self.get_page_by_title("Untitled")?.is_none() {
+            return Ok("Untitled".to_string());
+        }
+        let mut n = 2;
+        loop {
+            let candidate = format!("Untitled {n}");
+            if self.get_page_by_title(&candidate)?.is_none() {
+                return Ok(candidate);
+            }
+            n += 1;
+        }
+    }
+
     pub fn append_block(&mut self, page_id: Id, text: &str, meta: &TxMeta) -> Result<EditOutcome> {
         self.append_root_block(page_id, Vec::new(), text, meta)
     }

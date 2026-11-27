@@ -9,7 +9,6 @@ struct OutlinerView: View {
     @ObservedObject private var settings = AppSettings.shared
     let contentLeading: CGFloat
     let contentWidth: CGFloat
-    @State private var isRenaming = false
     @State private var renameDraft = ""
     @FocusState private var titleFieldFocused: Bool
 
@@ -22,7 +21,7 @@ struct OutlinerView: View {
                             content
                                 .frame(width: contentWidth, alignment: .leading)
                                 .padding(.leading, contentLeading)
-                                .padding(.top, 32)
+                                .padding(.top, EditorLayout.contentTop)
                                 .padding(.bottom, 140)
                             Spacer(minLength: 0)
                         }
@@ -209,14 +208,10 @@ struct OutlinerView: View {
                     .padding(.top, controller.backlinks.isEmpty ? 52 : 24)
             }
         }
-        .onChange(of: controller.selectedPageId) { _ in
-            isRenaming = false
-        }
-        .onChange(of: controller.renameRequest) { _ in
-            guard let page = controller.currentPage, page.journalDay == nil else { return }
-            renameDraft = page.title
-            isRenaming = true
-        }
+    }
+
+    private var isRenaming: Bool {
+        controller.isEditingTitle
     }
 
     private var startWriting: some View {
@@ -285,17 +280,20 @@ struct OutlinerView: View {
     private var pageHeader: some View {
         HStack(alignment: .center, spacing: 10) {
             if isRenaming {
-                TextField("Page title", text: $renameDraft)
+                TextField(controller.isNewUnsavedPage ? (controller.pageTitle ?? "Untitled") : "Page title", text: $renameDraft)
                     .textFieldStyle(.plain)
                     .focused($titleFieldFocused)
-                    .onAppear { titleFieldFocused = true }
+                    .onAppear {
+                        renameDraft = controller.isNewUnsavedPage ? "" : (controller.pageTitle ?? "")
+                        titleFieldFocused = true
+                    }
                     .font(Typography.ui(28, .semibold))
                     .foregroundColor(Theme.textStrong)
                     .onSubmit {
+                        controller.endTitleEdit()
                         controller.renameCurrentPage(to: renameDraft)
-                        isRenaming = false
                     }
-                    .onExitCommand { isRenaming = false }
+                    .onExitCommand { controller.endTitleEdit() }
             } else if controller.isJournalStream {
                 JournalTitleButton(title: settings.formatJournalTitle(controller.pageTitle ?? controller.todayTitle)) {
                     controller.openJournal(date: controller.todayTitle)
@@ -306,9 +304,7 @@ struct OutlinerView: View {
                     .tracking(-0.4)
                     .foregroundColor(Theme.textStrong)
                     .onTapGesture(count: 2) {
-                        guard let page = controller.currentPage, page.journalDay == nil else { return }
-                        renameDraft = page.title
-                        isRenaming = true
+                        controller.beginTitleEdit()
                     }
             }
 

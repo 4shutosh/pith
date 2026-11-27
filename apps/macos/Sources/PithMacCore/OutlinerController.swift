@@ -9,6 +9,7 @@ public enum NavTarget: Equatable {
     case shortcuts
     case settings
     case journals
+    case newPage
 
     var pageId: String? {
         if case let .page(id, _) = self { return id }
@@ -34,7 +35,7 @@ public enum SidebarDestination: Equatable {
 public final class OutlinerController: ObservableObject {
     @Published public private(set) var library = PageLibrary()
     @Published public var journals: [FfiPage] = []
-    @Published public private(set) var renameRequest: UInt64 = 0
+    @Published public private(set) var editingTitleOf: DisplayedView?
     @Published public var pendingPageDelete: FfiPage?
     @Published public var pendingPageRestore: (id: String, title: String)?
     @Published public var unlinkedRefs: [FfiUnlinkedRef] = []
@@ -46,7 +47,7 @@ public final class OutlinerController: ObservableObject {
     public static let journalStreamStep = 7
     static let libraryPatchLimit = 200
     @Published public var selectedPageId: String?
-    @Published public var pendingJournalTitle: String?
+    @Published public private(set) var pendingPage: PendingPage?
     @Published public var rows: [FfiFlatBlockRow] = []
     @Published public var totalVisible: UInt64 = 0
     @Published public private(set) var earlierRowsAnchor: EarlierRowsAnchor?
@@ -147,7 +148,32 @@ public final class OutlinerController: ObservableObject {
         if let page = currentPage {
             return page.title
         }
-        return pendingJournalTitle
+        return pendingPage?.title
+    }
+
+    public var pendingJournalTitle: String? {
+        get {
+            if case let .journal(date) = pendingPage { return date }
+            return nil
+        }
+        set {
+            pendingPage = newValue.map(PendingPage.journal)
+        }
+    }
+
+    public var isNewUnsavedPage: Bool {
+        guard listScreen == nil, case .untitled = pendingPage else { return false }
+        return true
+    }
+
+    public var displayed: DisplayedView {
+        DisplayedView(
+            listScreen: listScreen,
+            isJournalStream: isJournalStream,
+            pageId: selectedPageId,
+            zoomedBlockId: zoomedBlockId,
+            pendingPage: pendingPage
+        )
     }
 
     public var isShowingToday: Bool {
@@ -610,6 +636,12 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func renameCurrentPage(to newTitle: String) {
+        if isNewUnsavedPage {
+            let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            openPageByTitle(trimmed)
+            return
+        }
         guard let page = currentPage else { return }
         renamePage(page.id, to: newTitle)
     }
@@ -667,7 +699,8 @@ public final class OutlinerController: ObservableObject {
         case .findInPage: return inOutliner
         case .expandAll, .collapseAll: return inOutliner && selectedPageId != nil
         case .toggleFavorite: return onPage && currentPage != nil
-        case .renamePage, .deletePage: return editablePage
+        case .renamePage: return editablePage || isNewUnsavedPage
+        case .deletePage: return editablePage
         case .previousDay, .nextDay: return isShowingJournal
         case .goBack: return canGoBack || zoomedBlockId != nil
         case .goForward: return canGoForward
@@ -675,6 +708,7 @@ public final class OutlinerController: ObservableObject {
              .toggleSidebar, .toggleTheme:
             return true
         case .focusEditor: return listScreen == nil
+        case .newPage: return true
         case .cycleTask, .bold, .italic, .strikethrough, .highlight, .moveBlockUp, .moveBlockDown,
              .toggleBlockCollapse, .copyBlockMarkdown:
             return focusedBlockId != nil
@@ -692,11 +726,12 @@ public final class OutlinerController: ObservableObject {
         case .toggleFavorite:
             if let page = currentPage { toggleFavorite(page.id) }
         case .renamePage:
-            renameRequest &+= 1
+            beginTitleEdit()
         case .deletePage:
             pendingPageDelete = currentPage
         case .goToToday: goToToday()
         case .focusEditor: focusEditor()
+        case .newPage: createNewBlankPage()
         case .openJournals: openTodayJournal()
         case .previousDay: stepJournalDay(-1)
         case .nextDay: stepJournalDay(1)
@@ -959,6 +994,8 @@ public final class OutlinerController: ObservableObject {
         rows = []
         isJournalStream = false
         switch target {
+        case .newPage:
+            createNewBlankPage()
         case .journals:
             listScreen = nil
             zoomedBlockId = nil
@@ -1018,6 +1055,38 @@ public final class OutlinerController: ObservableObject {
         } catch {
             report(error)
         }
+    }
+
+    public func createNewBlankPage() {
+        leaveBlock()
+        if !isNewUnsavedPage {
+            pushHistoryIfNeeded(for: .newPage)
+            clearSelection()
+            closeFind()
+            listScreen = nil
+            isJournalStream = false
+            zoomedBlockId = nil
+            windowOffset = 0
+            selectedPageId = nil
+            rows = []
+            run { pendingPage = .untitled(title: try graph.nextUntitledTitle()) }
+            loadView()
+        }
+        beginTitleEdit()
+    }
+
+    public var isEditingTitle: Bool {
+        editingTitleOf == displayed
+    }
+
+    public func beginTitleEdit() {
+        guard isAvailable(.renamePage) else { return }
+        leaveBlock()
+        editingTitleOf = displayed
+    }
+
+    public func endTitleEdit() {
+        editingTitleOf = nil
     }
 
     public func focusBlock(_ blockId: String, cursorOffset: Int? = nil) {
@@ -1232,6 +1301,11 @@ public final class OutlinerController: ObservableObject {
             let outcome: FfiEditOutcome
             if let pageId = selectedPageId {
                 outcome = try graph.appendBlock(pageId: pageId, text: "", meta: meta("new block"))
+            } else if case let .untitled(pending) = pendingPage {
+                let title = try graph.getPageByTitle(title: pending) == nil ? pending : try graph.nextUntitledTitle()
+                outcome = try graph.startPage(title: title, meta: meta("new page"))
+                selectedPageId = try graph.getPageByTitle(title: title)?.id
+                pendingPage = nil
             } else {
                 let targetDate = pendingJournalTitle
                 outcome = try graph.startJournal(date: targetDate, meta: meta("start journal"))

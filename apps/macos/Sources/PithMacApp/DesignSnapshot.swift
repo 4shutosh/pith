@@ -52,6 +52,9 @@ enum DesignSnapshot {
             controller.showSettings()
             await capture(window, directory, "\(mode.rawValue)-9-settings")
 
+            controller.createNewBlankPage()
+            await capture(window, directory, "\(mode.rawValue)-10-new-page")
+
             controller.openTodayJournal()
             showSidebar.wrappedValue = false
             await capture(window, directory, "\(mode.rawValue)-6-sidebar-hidden")

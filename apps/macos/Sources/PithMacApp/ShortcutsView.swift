@@ -97,7 +97,7 @@ struct ShortcutsView: View {
                         .padding(.bottom, 16)
                     notices
                 }
-                .padding(.top, 32)
+                .padding(.top, EditorLayout.contentTop)
             }
             Rectangle().fill(Theme.divider).frame(height: 1)
 

@@ -9,6 +9,7 @@ public struct EditorLayout: Equatable {
     public static let minimumContentWidth: CGFloat = 320
     public static let minimumWindowWidth: CGFloat = 360
     public static let minimumWindowHeight: CGFloat = 400
+    public static let contentTop: CGFloat = 48
 
     public let leading: CGFloat
     public let width: CGFloat

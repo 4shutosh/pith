@@ -211,6 +211,7 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
     case previousDay
     case nextDay
 
+    case newPage
     case focusEditor
     case findInPage
     case expandAll
@@ -244,6 +245,7 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .openPalette: return "Command Palette & Search"
         case .goToToday: return "Go to Today and Write"
+        case .newPage: return "New Page"
         case .focusEditor: return "Focus Editor"
         case .openJournals: return "Go to Journals"
         case .openAllPages: return "Go to All Pages"
@@ -282,6 +284,7 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .openPalette: return "search command palette quick switcher"
         case .goToToday: return "today journal daily write now"
+        case .newPage: return "create add untitled blank note"
         case .focusEditor: return "write type edit cursor start typing"
         case .openJournals: return "today daily notes"
         case .openAllPages: return "directory list index"
@@ -321,7 +324,7 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         case .openPalette, .goToToday, .openJournals, .openAllPages, .searchShortcuts, .openShortcuts,
              .goBack, .goForward, .previousDay, .nextDay:
             return .navigation
-        case .focusEditor, .findInPage, .expandAll, .collapseAll, .toggleFavorite, .renamePage, .deletePage:
+        case .newPage, .focusEditor, .findInPage, .expandAll, .collapseAll, .toggleFavorite, .renamePage, .deletePage:
             return .page
         case .cycleTask, .bold, .italic, .strikethrough, .highlight,
              .moveBlockUp, .moveBlockDown, .toggleBlockCollapse, .copyBlockMarkdown:
@@ -349,6 +352,7 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .openPalette: return KeyCombo(.character("k"), [.command])
         case .goToToday: return KeyCombo(.character("t"), [.command])
+        case .newPage: return KeyCombo(.character("n"), [.command])
         case .focusEditor: return KeyCombo(.character("e"), [.command])
         case .openJournals: return KeyCombo(.character("j"), [.command])
         case .openAllPages: return KeyCombo(.character("p"), [.command, .shift])
