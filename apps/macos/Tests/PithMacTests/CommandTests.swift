@@ -21,7 +21,7 @@ final class CommandTests: XCTestCase {
         let controller = try OutlinerController(graph: try PithGraph.openInMemory())
         XCTAssertEqual(
             titles(controller),
-            ["Go to Journals", "Previous Day", "Next Day", "Go to All Pages", "Toggle Sidebar", "Toggle Light/Dark"]
+            ["Go to Today and Write", "Go to Journals", "Go to All Pages", "Search Keyboard Shortcuts", "Keyboard Shortcuts Settings", "Previous Journal Day", "Next Journal Day", "Focus Editor", "Toggle Sidebar", "Toggle Light / Dark", "Settings"]
         )
     }
 
@@ -33,13 +33,13 @@ final class CommandTests: XCTestCase {
 
         XCTAssertEqual(
             titles(controller),
-            ["Find in Page", "Expand All Blocks", "Collapse All Blocks", "Add to Favorites", "Rename Page", "Delete Page…", "Go to Journals", "Go to All Pages", "Back", "Toggle Sidebar", "Toggle Light/Dark"]
+            ["Go to Today and Write", "Go to Journals", "Go to All Pages", "Search Keyboard Shortcuts", "Keyboard Shortcuts Settings", "Navigate Back", "Focus Editor", "Find in Page", "Expand All Blocks", "Collapse All Blocks", "Add to Favorites", "Rename Page", "Delete Page…", "Toggle Sidebar", "Toggle Light / Dark", "Settings"]
         )
-        XCTAssertEqual(controller.paletteItems.first(where: { $0.command == .toggleFavorite })?.shortcut, "⌘D")
+        XCTAssertEqual(controller.paletteItems.first(where: { $0.action == .toggleFavorite })?.shortcut, "⌘D")
 
         controller.perform(.toggleFavorite)
         XCTAssertEqual(controller.favoritePages.map(\.title), ["Roadmap"])
-        XCTAssertEqual(controller.paletteItems.first(where: { $0.command == .toggleFavorite })?.title, "Remove from Favorites")
+        XCTAssertEqual(controller.paletteItems.first(where: { $0.action == .toggleFavorite })?.title, "Remove from Favorites")
 
         let before = controller.renameRequest
         controller.perform(.renamePage)
@@ -82,7 +82,7 @@ final class CommandTests: XCTestCase {
         controller.selectPage(id)
 
         XCTAssertEqual(controller.paletteItems(matching: "fav").map(\.title), ["Add to Favorites"])
-        XCTAssertEqual(controller.paletteItems(matching: "dark").map(\.title), ["Toggle Light/Dark"])
+        XCTAssertEqual(controller.paletteItems(matching: "dark").map(\.title), ["Toggle Light / Dark"])
         XCTAssertEqual(controller.paletteItems(matching: "go pages").map(\.title), ["Go to All Pages"])
         XCTAssertEqual(controller.paletteItems(matching: "zzz").map(\.title), [])
     }

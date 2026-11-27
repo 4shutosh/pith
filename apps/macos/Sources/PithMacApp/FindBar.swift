@@ -48,7 +48,7 @@ struct FindBar: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.elevatedBorder, lineWidth: 1))
         .shadow(color: Theme.shadow, radius: 16, y: 6)
-        .keyScope(.overlay, whileEditingText: true) { stroke in
+        .keyScope(.overlay, whileEditingText: true, isActive: controller.isFindOpen) { stroke in
             switch (stroke.key, stroke.modifiers) {
             case (.escape, []):
                 controller.closeFind()
@@ -96,6 +96,7 @@ private struct FindNavButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .cursor(disabled ? .arrow : .pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
         .help(direction == .up ? "Previous match (⇧↵)" : "Next match (↵)")
     }
@@ -123,6 +124,7 @@ private struct FindCloseButton: View {
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
         .help("Close find (Esc)")
     }

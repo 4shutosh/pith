@@ -278,3 +278,44 @@ struct ClearIcon: View {
     }
 }
 
+struct KeyboardIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let rect = CGRect(x: 1, y: 2.5, width: size.width - 2, height: size.height - 5)
+            context.stroke(Path(roundedRect: rect, cornerRadius: 2.5), with: .foreground, lineWidth: 1.25)
+
+            let dotPositions: [(CGFloat, CGFloat)] = [
+                (4, 5.5), (7, 5.5), (10, 5.5),
+                (4, 8), (10, 8),
+            ]
+            for (x, y) in dotPositions {
+                let dot = CGRect(x: x - 0.65, y: y - 0.65, width: 1.3, height: 1.3)
+                context.fill(Path(ellipseIn: dot), with: .foreground)
+            }
+            var space = Path()
+            space.move(to: CGPoint(x: 5.5, y: 8.8))
+            space.addLine(to: CGPoint(x: 8.5, y: 8.8))
+            context.stroke(space, with: .foreground, style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
+struct SettingsIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let rows: [(CGFloat, CGFloat)] = [(3.5, 4.5), (7, 9.5), (10.5, 6)]
+            for (y, knobX) in rows {
+                var line = Path()
+                line.move(to: CGPoint(x: 1.5, y: y))
+                line.addLine(to: CGPoint(x: size.width - 1.5, y: y))
+                context.stroke(line, with: .foreground, style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+                let knob = CGRect(x: knobX - 1.6, y: y - 1.6, width: 3.2, height: 3.2)
+                context.fill(Path(ellipseIn: knob), with: .color(Theme.sidebar))
+                context.stroke(Path(ellipseIn: knob), with: .foreground, lineWidth: 1.2)
+            }
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+

@@ -15,6 +15,7 @@ final class PithTextView: NSTextView {
     var onToggleCollapse: ((Int) -> Void)?
     var onCopyMarkdown: (() -> Void)?
     var onPaste: ((String, Int, Int) -> Bool)?
+    var shortcuts: ShortcutStore?
 
     private var previewTimer: DispatchWorkItem?
     private var previewPopover: NSPopover?
@@ -29,29 +30,33 @@ final class PithTextView: NSTextView {
             super.keyDown(with: event)
             return
         }
-        let stroke = KeyStroke(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers, modifiers: event.modifierFlags)
-        switch (stroke.key, stroke.modifiers) {
-        case (.returnKey, .command):
-            onCommandReturn?(caret)
-        case (.up, .option):
-            onMoveBlock?(true, caret)
-        case (.down, .option):
-            onMoveBlock?(false, caret)
-        case (.character("b"), .command):
-            applyInlineFormat(.bold)
-        case (.character("i"), .command):
-            applyInlineFormat(.italic)
-        case (.character("x"), [.command, .shift]):
-            applyInlineFormat(.strike)
-        case (.character("h"), [.command, .shift]):
-            applyInlineFormat(.highlight)
-        case (.character("."), .command):
-            onToggleCollapse?(caret)
-        case (.character("c"), [.command, .shift]):
-            onCopyMarkdown?()
-        default:
-            super.keyDown(with: event)
+        let stroke = KeyStroke(event: event, isEditingText: true)
+        if let action = shortcuts?.action(matching: stroke, in: .editor) {
+            switch action {
+            case .cycleTask:
+                onCommandReturn?(caret)
+            case .moveBlockUp:
+                onMoveBlock?(true, caret)
+            case .moveBlockDown:
+                onMoveBlock?(false, caret)
+            case .bold:
+                applyInlineFormat(.bold)
+            case .italic:
+                applyInlineFormat(.italic)
+            case .strikethrough:
+                applyInlineFormat(.strike)
+            case .highlight:
+                applyInlineFormat(.highlight)
+            case .toggleBlockCollapse:
+                onToggleCollapse?(caret)
+            case .copyBlockMarkdown:
+                onCopyMarkdown?()
+            default:
+                super.keyDown(with: event)
+            }
+            return
         }
+        super.keyDown(with: event)
     }
 
     private func applyInlineFormat(_ format: FfiInlineFormat) {
@@ -208,22 +213,53 @@ final class PithTextView: NSTextView {
         if target == activePreviewTarget {
             return
         }
-        dismissHoverPreview()
+        let wasShowing = previewPopover?.isShown == true
+        previewTimer?.cancel()
+        previewTimer = nil
         activePreviewTarget = target
-        let anchorRect = NSRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)
-        let work = DispatchWorkItem { [weak self] in
+        let anchorRect = spanBoundingRect(at: point) ?? NSRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)
+        let present: () -> Void = { [weak self] in
             guard let self, !self.isEditable, self.window != nil,
                   self.activePreviewTarget == target,
                   let preview = self.onHoverPreview?(target) else { return }
+            if let existing = self.previewPopover, existing.isShown,
+               let host = existing.contentViewController as? NSHostingController<HoverPreviewView> {
+                host.rootView = HoverPreviewView(preview: preview)
+                existing.positioningRect = anchorRect
+                return
+            }
             let popover = NSPopover()
             popover.behavior = .transient
-            popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            popover.animates = false
             popover.contentViewController = NSHostingController(rootView: HoverPreviewView(preview: preview))
             popover.show(relativeTo: anchorRect, of: self, preferredEdge: .maxY)
             self.previewPopover = popover
         }
-        previewTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        if wasShowing {
+            present()
+        } else {
+            let work = DispatchWorkItem(block: present)
+            previewTimer = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.11, execute: work)
+        }
+    }
+
+    private func spanBoundingRect(at point: NSPoint) -> NSRect? {
+        guard let layout = layoutManager, let container = textContainer, let storage = textStorage,
+              storage.length > 0 else { return nil }
+        let containerPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        let glyph = layout.glyphIndex(for: containerPoint, in: container)
+        let index = layout.characterIndexForGlyph(at: glyph)
+        guard index < storage.length else { return nil }
+        var effectiveRange = NSRange(location: 0, length: 0)
+        let hasAttr = storage.attribute(.pithPageId, at: index, effectiveRange: &effectiveRange) != nil
+            || storage.attribute(.pithBlockRefId, at: index, effectiveRange: &effectiveRange) != nil
+        guard hasAttr, effectiveRange.length > 0 else { return nil }
+        let glyphRange = layout.glyphRange(forCharacterRange: effectiveRange, actualCharacterRange: nil)
+        var rect = layout.boundingRect(forGlyphRange: glyphRange, in: container)
+        rect.origin.x += textContainerOrigin.x
+        rect.origin.y += textContainerOrigin.y
+        return rect
     }
 
     private func applyHoverCursor(for event: NSEvent) {
@@ -328,6 +364,7 @@ final class PithTextView: NSTextView {
 struct BlockTextView: NSViewRepresentable {
     let blockId: String
     let isEditing: Bool
+    var accent: AccentPalette = Theme.currentAccent
     let display: NSAttributedString
     let runs: [DisplayRun]
     @Binding var text: String
@@ -359,6 +396,7 @@ struct BlockTextView: NSViewRepresentable {
     var onToggleCollapse: (Int) -> Void = { _ in }
     var onCopyMarkdown: () -> Void = {}
     var onPaste: (String, Int, Int) -> Bool = { _, _, _ in false }
+    var shortcuts: ShortcutStore? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -405,6 +443,10 @@ struct BlockTextView: NSViewRepresentable {
             let editText = runs.map(\.source).joined()
             onActivate(TextOffsets.scalar(fromUTF16: editUTF16, in: editText))
         }
+        textView.insertionPointColor = Theme.nsCaret
+        textView.selectedTextAttributes = [
+            .backgroundColor: Theme.nsSelection,
+        ]
         textView.onShiftClick = onShiftClick
         textView.onOpenPage = onOpenPage
         textView.onRestoreDeletedPage = onRestoreDeletedPage
@@ -415,6 +457,13 @@ struct BlockTextView: NSViewRepresentable {
         textView.onToggleCollapse = onToggleCollapse
         textView.onCopyMarkdown = onCopyMarkdown
         textView.onPaste = onPaste
+        textView.shortcuts = shortcuts
+
+        let accentChanged = context.coordinator.lastAccent != accent
+        if accentChanged {
+            context.coordinator.lastAccent = accent
+            textView.needsDisplay = true
+        }
 
         if isEditing {
             textView.dismissHoverPreview()
@@ -424,7 +473,7 @@ struct BlockTextView: NSViewRepresentable {
                 textView.isSelectable = true
                 textView.window?.invalidateCursorRects(for: textView)
             }
-            if startedEditing || (!textView.hasMarkedText() && textView.string != text) {
+            if startedEditing || accentChanged || (!textView.hasMarkedText() && textView.string != text) {
                 let previous = textView.selectedRange()
                 textView.textStorage?.setAttributedString(
                     NSAttributedString(string: text, attributes: BlockStyle.editingAttributes)
@@ -456,8 +505,9 @@ struct BlockTextView: NSViewRepresentable {
                 }
                 textView.window?.invalidateCursorRects(for: textView)
             }
-            if textView.textStorage?.isEqual(to: display) != true {
+            if accentChanged || textView.textStorage?.isEqual(to: display) != true {
                 textView.textStorage?.setAttributedString(display)
+                textView.needsDisplay = true
                 textView.window?.invalidateCursorRects(for: textView)
             }
         }
@@ -466,6 +516,7 @@ struct BlockTextView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: BlockTextView
         var lastAppliedCursorSeq: UInt64 = 0
+        var lastAccent: AccentPalette = Theme.currentAccent
         private var popover: NSPopover?
         private var pendingPairCheck = false
 

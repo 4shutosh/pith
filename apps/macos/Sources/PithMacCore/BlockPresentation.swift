@@ -78,8 +78,12 @@ public enum BlockPresentation {
         return prefix + " " + body
     }
 
-    public static func runs(_ display: FfiBlockDisplay) -> (status: TaskStatus?, runs: [DisplayRun]) {
-        let runs = display.runs.map { DisplayRun(display: $0.display, source: $0.source, style: RunStyle($0.style)) }
+    public static func runs(_ display: FfiBlockDisplay, showLinkBrackets: Bool = true) -> (status: TaskStatus?, runs: [DisplayRun]) {
+        let runs = display.runs.map { run -> DisplayRun in
+            let style = RunStyle(run.style)
+            let hideBracket = !showLinkBrackets && style == .bracket && (run.display == "[[" || run.display == "]]")
+            return DisplayRun(display: hideBracket ? "" : run.display, source: run.source, style: style)
+        }
         return (display.taskState.flatMap(TaskStatus.init(state:)), runs)
     }
 

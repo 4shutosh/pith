@@ -5,6 +5,7 @@ import SwiftUI
 
 struct OutlinerView: View {
     @ObservedObject var controller: OutlinerController
+    @ObservedObject private var settings = AppSettings.shared
     let contentLeading: CGFloat
     let contentWidth: CGFloat
     @State private var isRenaming = false
@@ -71,13 +72,27 @@ struct OutlinerView: View {
             }
         }
 
+        if let action = controller.shortcuts.action(matching: stroke, in: .selection) {
+            switch action {
+            case .cycleSelectedTasks:
+                controller.cycleSelectedTasks()
+            case .moveSelectionUp:
+                controller.moveSelectedBlocks(up: true)
+            case .moveSelectionDown:
+                controller.moveSelectedBlocks(up: false)
+            case .selectAllBlocks:
+                controller.selectAllBlocks()
+            default:
+                return false
+            }
+            return true
+        }
+
         switch (stroke.key, stroke.modifiers) {
         case (.escape, []):
             controller.clearSelection()
         case (.returnKey, []):
             controller.enterSelectedBlock()
-        case (.returnKey, .command):
-            controller.cycleSelectedTasks()
         case (.backspace, []), (.forwardDelete, []):
             controller.deleteSelectedBlocks()
         case (.tab, []):
@@ -92,17 +107,11 @@ struct OutlinerView: View {
             controller.extendSelection(up: true)
         case (.down, .shift):
             controller.extendSelection(up: false)
-        case (.up, .option):
-            controller.moveSelectedBlocks(up: true)
-        case (.down, .option):
-            controller.moveSelectedBlocks(up: false)
         case (.character("c"), .command):
             copySelectedBlocks()
         case (.character("x"), .command):
             copySelectedBlocks()
             controller.deleteSelectedBlocks()
-        case (.character("a"), .command):
-            controller.selectAllBlocks()
         default:
             return false
         }
@@ -214,7 +223,7 @@ struct OutlinerView: View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(Array(controller.journalSections.enumerated()), id: \.offset) { index, section in
                 if index > 0 {
-                    JournalHeading(title: section.title) {
+                    JournalHeading(title: settings.formatJournalTitle(section.title)) {
                         controller.openJournal(date: section.title)
                     }
                 }
@@ -267,11 +276,11 @@ struct OutlinerView: View {
                     }
                     .onExitCommand { isRenaming = false }
             } else if controller.isJournalStream {
-                JournalTitleButton(title: controller.pageTitle ?? controller.todayTitle) {
+                JournalTitleButton(title: settings.formatJournalTitle(controller.pageTitle ?? controller.todayTitle)) {
                     controller.openJournal(date: controller.todayTitle)
                 }
             } else {
-                Text(controller.pageTitle ?? "")
+                Text(controller.isShowingJournal ? settings.formatJournalTitle(controller.pageTitle ?? "") : (controller.pageTitle ?? ""))
                     .font(Typography.ui(28, .semibold))
                     .tracking(-0.4)
                     .foregroundColor(Theme.textStrong)
@@ -307,6 +316,7 @@ private struct OutlineRow: View {
     let cursorSeq: UInt64
     let completion: CompletionState?
     let controller: OutlinerController
+    @ObservedObject private var settings = AppSettings.shared
     @State private var isHovered = false
 
     static let indent: CGFloat = 24
@@ -318,7 +328,7 @@ private struct OutlineRow: View {
     private static let rowPadding: CGFloat = 4
 
     var body: some View {
-        let presentation = BlockPresentation.runs(row.display)
+        let presentation = BlockPresentation.runs(row.display, showLinkBrackets: settings.showLinkBrackets)
         let rowFindMatches = controller.findMatches(in: row.id)
         let activeFindOrdinal = controller.activeFindOrdinal(in: row.id)
 
@@ -391,6 +401,7 @@ private struct OutlineRow: View {
                     let editor = BlockTextView(
                         blockId: row.id,
                         isEditing: isFocused,
+                        accent: settings.accent,
                         display: BlockStyle.display(
                             presentation.runs,
                             closed: presentation.status?.isClosed ?? false,
@@ -440,7 +451,8 @@ private struct OutlineRow: View {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(markdown, forType: .string)
                         },
-                        onPaste: { controller.paste($0, selectionStart: $1, selectionEnd: $2) }
+                        onPaste: { controller.paste($0, selectionStart: $1, selectionEnd: $2) },
+                        shortcuts: controller.shortcuts
                     )
 
                     if !isFocused, case .quote = row.kind {

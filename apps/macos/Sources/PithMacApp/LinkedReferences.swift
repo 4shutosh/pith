@@ -58,6 +58,7 @@ private struct SectionToggle: View {
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
         .help(isCollapsed ? "Show linked references" : "Hide linked references")
     }
@@ -79,6 +80,7 @@ private struct SourcePageLabel: View {
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
         .help("Open \(title)")
     }
@@ -113,6 +115,7 @@ private struct ReferenceRow: View {
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
     }
 }
@@ -198,6 +201,7 @@ private struct UnlinkedSectionToggle: View {
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
         .help(isExpanded ? "Hide unlinked references" : "Search for unlinked mentions")
     }

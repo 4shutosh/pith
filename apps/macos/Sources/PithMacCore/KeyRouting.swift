@@ -79,6 +79,16 @@ public struct KeyStroke: Equatable {
         self.isComposingIME = isComposingIME
     }
 
+    public init(event: NSEvent, isEditingText: Bool = false, isComposingIME: Bool = false) {
+        self.init(
+            keyCode: event.keyCode,
+            characters: event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers,
+            modifiers: event.modifierFlags,
+            isEditingText: isEditingText,
+            isComposingIME: isComposingIME
+        )
+    }
+
     public var key: Key {
         Key(keyCode: keyCode, characters: characters)
     }
@@ -90,6 +100,7 @@ public final class KeyRouter: ObservableObject {
         let id: UUID
         let layer: KeyLayer
         let whileEditingText: Bool
+        let isActive: () -> Bool
         let handler: (KeyStroke) -> Bool
     }
 
@@ -102,10 +113,11 @@ public final class KeyRouter: ObservableObject {
     public func register(
         layer: KeyLayer,
         whileEditingText: Bool = false,
+        isActive: @escaping () -> Bool = { true },
         handler: @escaping (KeyStroke) -> Bool
     ) -> UUID {
         let id = UUID()
-        entries.append(Entry(id: id, layer: layer, whileEditingText: whileEditingText, handler: handler))
+        entries.append(Entry(id: id, layer: layer, whileEditingText: whileEditingText, isActive: isActive, handler: handler))
         return id
     }
 
@@ -113,10 +125,15 @@ public final class KeyRouter: ObservableObject {
         entries.removeAll { $0.id == id }
     }
 
+    public func registrationCount(in layer: KeyLayer) -> Int {
+        entries.filter { $0.layer == layer && $0.isActive() }.count
+    }
+
     public func dispatch(_ stroke: KeyStroke) -> Bool {
         guard !stroke.isComposingIME else { return false }
-        let hasOverlay = entries.contains { $0.layer == .overlay }
-        let ordered = entries.enumerated().sorted { lhs, rhs in
+        let activeEntries = entries.enumerated().filter { $0.element.isActive() }
+        let hasOverlay = activeEntries.contains { $0.element.layer == .overlay }
+        let ordered = activeEntries.sorted { lhs, rhs in
             if lhs.element.layer != rhs.element.layer {
                 return lhs.element.layer > rhs.element.layer
             }
@@ -142,9 +159,7 @@ public final class KeyRouter: ObservableObject {
             guard let self, event.isAimedAtMainContent else { return event }
             let textView = event.window?.firstResponder as? NSTextView
             let stroke = KeyStroke(
-                keyCode: event.keyCode,
-                characters: event.charactersIgnoringModifiers,
-                modifiers: event.modifierFlags,
+                event: event,
                 isEditingText: textView != nil,
                 isComposingIME: textView?.hasMarkedText() ?? false
             )

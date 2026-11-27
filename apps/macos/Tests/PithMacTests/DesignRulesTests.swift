@@ -61,4 +61,28 @@ final class DesignRulesTests: XCTestCase {
         XCTAssertEqual(TypeScale.sans, [11, 12, 13, 14, 15, 17, 22, 28])
         XCTAssertEqual(TypeScale.mono, [13.5])
     }
+
+    func testOnlyKeyRouterInstallsGlobalKeyMonitors() throws {
+        let found = try violations(#"addLocalMonitorForEvents"#, in: try sources()) { source, _, _ in
+            source.path == "KeyRouting.swift"
+        }
+        XCTAssertEqual(found, [], "install keyboard handlers via .keyScope(...) instead of NSEvent monitors (docs/DESIGN.md)")
+    }
+
+    func testViewsDoNotMatchRawKeyCodes() throws {
+        let found = try violations(#"\.keyCode\s*==|switch\s+[^.\n]*\.keyCode\b"#, in: try sources()) { source, _, _ in
+            source.path == "KeyRouting.swift"
+        }
+        XCTAssertEqual(found, [], "match on KeyStroke.key or ShortcutStore instead of raw keyCodes (docs/DESIGN.md)")
+    }
+
+    func testMenusUseDynamicShortcutsFromShortcutStore() throws {
+        let found = try violations(#"\.keyboardShortcut\("#, in: try sources()) { source, _, line in
+            if source.path == "PithMacApp.swift" {
+                return line.contains(#""z""#) || line.contains("self.keyboardShortcut(shortcut)")
+            }
+            return false
+        }
+        XCTAssertEqual(found, [], "use .dynamicShortcut(_:in:) backed by ShortcutStore so shortcuts stay customizable")
+    }
 }

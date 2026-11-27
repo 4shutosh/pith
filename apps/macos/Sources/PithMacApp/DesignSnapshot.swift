@@ -44,6 +44,11 @@ enum DesignSnapshot {
             controller.showAllPages()
             await capture(window, directory, "\(mode.rawValue)-5-all-pages")
 
+            controller.showShortcuts()
+            await capture(window, directory, "\(mode.rawValue)-7-shortcuts")
+            scrollLongestToBottom(in: window)
+            await capture(window, directory, "\(mode.rawValue)-8-shortcuts-scrolled")
+
             controller.openTodayJournal()
             showSidebar.wrappedValue = false
             await capture(window, directory, "\(mode.rawValue)-6-sidebar-hidden")
@@ -51,7 +56,25 @@ enum DesignSnapshot {
         NSApp.terminate(nil)
     }
 
-    private static func capture(_ window: NSWindow, _ directory: URL, _ name: String) async {
+    private static func scrollLongestToBottom(in window: NSWindow) {
+        guard let root = window.contentView else { return }
+        var scrollViews: [NSScrollView] = []
+        var queue: [NSView] = [root]
+        while let view = queue.popLast() {
+            if let scroll = view as? NSScrollView {
+                scrollViews.append(scroll)
+            }
+            queue.append(contentsOf: view.subviews)
+        }
+        guard let longest = scrollViews.max(by: {
+            ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0)
+        }), let document = longest.documentView else { return }
+        let bottom = max(0, document.frame.height - longest.contentView.bounds.height)
+        longest.contentView.scroll(to: NSPoint(x: 0, y: document.isFlipped ? bottom : 0))
+        longest.reflectScrolledClipView(longest.contentView)
+    }
+
+    static func capture(_ window: NSWindow, _ directory: URL, _ name: String) async {
         try? await Task.sleep(nanoseconds: 700_000_000)
         guard let image = CGWindowListCreateImage(
             .null,

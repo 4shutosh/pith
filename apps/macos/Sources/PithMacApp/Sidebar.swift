@@ -4,6 +4,7 @@ import SwiftUI
 
 struct Sidebar: View {
     @ObservedObject var controller: OutlinerController
+    @ObservedObject var shortcuts: ShortcutStore
     @Binding var showSearch: Bool
     @Namespace private var selectionNamespace
 
@@ -13,7 +14,7 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SearchFieldButton {
+            SearchFieldButton(shortcut: shortcuts.displayString(for: .openPalette)) {
                 withAnimation(Motion.pop) { showSearch = true }
             }
             .padding(.bottom, 12)
@@ -21,7 +22,7 @@ struct Sidebar: View {
             VStack(spacing: 1) {
                 SidebarNavItem(
                     title: "Journals",
-                    shortcut: "⌘J",
+                    shortcut: shortcuts.displayString(for: .openJournals),
                     isSelected: destination == .journals,
                     selectionNamespace: selectionNamespace
                 ) {
@@ -31,7 +32,7 @@ struct Sidebar: View {
                 }
                 SidebarNavItem(
                     title: "All pages",
-                    shortcut: "⇧⌘P",
+                    shortcut: shortcuts.displayString(for: .openAllPages),
                     isSelected: destination == .allPages,
                     selectionNamespace: selectionNamespace
                 ) {
@@ -66,6 +67,35 @@ struct Sidebar: View {
             }
 
             Spacer(minLength: 0)
+
+            Rectangle()
+                .fill(Theme.divider)
+                .frame(height: 1)
+                .padding(.bottom, 8)
+
+            VStack(spacing: 1) {
+                SidebarNavItem(
+                    title: "Shortcuts",
+                    shortcut: shortcuts.displayString(for: .openShortcuts),
+                    isSelected: destination == .shortcuts,
+                    selectionNamespace: selectionNamespace
+                ) {
+                    KeyboardIcon()
+                } action: {
+                    controller.showShortcuts()
+                }
+                SidebarNavItem(
+                    title: "Settings",
+                    shortcut: shortcuts.displayString(for: .openSettings),
+                    isSelected: destination == .settings,
+                    selectionNamespace: selectionNamespace
+                ) {
+                    SettingsIcon()
+                } action: {
+                    controller.showSettings()
+                }
+            }
+            .padding(.bottom, 12)
         }
         .padding(.top, 44)
         .padding(.horizontal, SidebarMetrics.outerInset)
@@ -101,6 +131,7 @@ enum SidebarMetrics {
 }
 
 private struct SearchFieldButton: View {
+    let shortcut: String?
     let action: () -> Void
     @State private var isHovered = false
 
@@ -114,9 +145,11 @@ private struct SearchFieldButton: View {
                     .font(Typography.ui(13))
                     .foregroundColor(Theme.textTertiary)
                 Spacer(minLength: 0)
-                Text("⌘K")
-                    .font(Typography.ui(11))
-                    .foregroundColor(Theme.textTertiary)
+                if let shortcut {
+                    Text(shortcut)
+                        .font(Typography.ui(11))
+                        .foregroundColor(Theme.textTertiary)
+                }
             }
             .padding(.horizontal, SidebarMetrics.rowInset)
             .frame(height: 30)

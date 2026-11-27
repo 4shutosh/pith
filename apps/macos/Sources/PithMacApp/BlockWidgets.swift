@@ -21,6 +21,7 @@ struct DividerBlockView: View {
         }
         .buttonStyle(.plain)
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
     }
 }
@@ -121,6 +122,7 @@ private struct PropertyChip: View {
         .contentShape(Rectangle())
         .onTapGesture { onEdit() }
         .cursor(.pointingHand)
+        .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
     }
 }

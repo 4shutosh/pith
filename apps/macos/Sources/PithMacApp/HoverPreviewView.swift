@@ -9,6 +9,7 @@ enum HoverPreviewTarget: Equatable {
 
 struct HoverPreviewView: View {
     let preview: FfiLinkPreview
+    @State private var appeared = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -59,5 +60,13 @@ struct HoverPreviewView: View {
         .padding(12)
         .frame(width: 320, alignment: .leading)
         .background(Theme.elevated)
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.96, anchor: .top)
+        .offset(y: appeared ? 0 : -3)
+        .onAppear {
+            withAnimation(Motion.pop) {
+                appeared = true
+            }
+        }
     }
 }

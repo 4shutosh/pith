@@ -2,11 +2,11 @@ import AppKit
 import SwiftUI
 
 enum Motion {
-    static var hover: Animation? { gated(.easeOut(duration: 0.10)) }
-    static var fast: Animation? { gated(.easeOut(duration: 0.12)) }
-    static var morph: Animation? { gated(.spring(response: 0.20, dampingFraction: 0.88)) }
-    static var drawer: Animation? { gated(.spring(response: 0.22, dampingFraction: 0.92)) }
-    static var pop: Animation? { gated(.spring(response: 0.16, dampingFraction: 0.78)) }
+    static var hover: Animation? { gated(.easeOut(duration: 0.08)) }
+    static var fast: Animation? { gated(.easeOut(duration: 0.10)) }
+    static var morph: Animation? { gated(.spring(response: 0.18, dampingFraction: 0.88)) }
+    static var drawer: Animation? { gated(.spring(response: 0.20, dampingFraction: 0.92)) }
+    static var pop: Animation? { gated(.spring(response: 0.14, dampingFraction: 0.82)) }
 
     private static func gated(_ animation: Animation) -> Animation? {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : animation

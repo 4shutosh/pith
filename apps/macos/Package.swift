@@ -29,6 +29,7 @@ let package = Package(
         .testTarget(
             name: "PithMacTests",
             dependencies: [
+                "PithMacApp",
                 "PithMacCore",
                 .product(name: "PithCore", package: "PithCore")
             ],

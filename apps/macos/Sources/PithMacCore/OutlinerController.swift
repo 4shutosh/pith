@@ -6,16 +6,22 @@ public enum NavTarget: Equatable {
     case page(id: String, zoomedBlockId: String?)
     case pendingJournal(title: String)
     case allPages
+    case shortcuts
+    case settings
     case journals
 }
 
 public enum ListScreen: Equatable {
     case allPages
+    case shortcuts
+    case settings
 }
 
 public enum SidebarDestination: Equatable {
     case journals
     case allPages
+    case shortcuts
+    case settings
     case page(String)
 }
 
@@ -61,6 +67,8 @@ public final class OutlinerController: ObservableObject {
     @Published public var canGoForward: Bool = false
 
     public let graph: PithGraph
+    public let shortcuts: ShortcutStore
+    @Published public var paletteScope: PaletteScope = .everything
     public let actor: String
     public let todayTitle: String
     public var debounceNanoseconds: UInt64 = 300_000_000
@@ -76,14 +84,16 @@ public final class OutlinerController: ObservableObject {
     private var isRestoringHistory: Bool = false
     private var undoGroup: String = newId()
     private var lastDataVersion: Int64 = 0
+    private var lastEditedBlockId: String?
     private var isComposingIME: Bool = false
     private var isEditingRef: Bool = false
     private var debounceTask: Task<Void, Never>?
     private var windowOffset: UInt64 = 0
     private let signposter = OSSignposter(subsystem: "app.pith", category: "editor")
 
-    public init(graph: PithGraph, actor: String = "me") throws {
+    public init(graph: PithGraph, actor: String = "me", shortcuts: ShortcutStore? = nil) throws {
         self.graph = graph
+        self.shortcuts = shortcuts ?? ShortcutStore.shared
         self.actor = actor
         self.todayTitle = try journalTitle(date: nil)
         self.lastDataVersion = try graph.dataVersion()
@@ -138,6 +148,8 @@ public final class OutlinerController: ObservableObject {
     public var sidebarDestination: SidebarDestination? {
         switch listScreen {
         case .allPages: return .allPages
+        case .shortcuts: return .shortcuts
+        case .settings: return .settings
         case nil: break
         }
         if isJournalStream && zoomedBlockId == nil {
@@ -338,6 +350,7 @@ public final class OutlinerController: ObservableObject {
         pushHistoryIfNeeded(for: .allPages)
         clearSelection()
         leaveBlock()
+        closeFind()
         isJournalStream = false
         listScreen = .allPages
         run {
@@ -345,6 +358,24 @@ public final class OutlinerController: ObservableObject {
             journals = try graph.listJournals(limit: 30)
             pageSummaries = try graph.listPageSummaries()
         }
+    }
+
+    public func showShortcuts() {
+        pushHistoryIfNeeded(for: .shortcuts)
+        clearSelection()
+        leaveBlock()
+        closeFind()
+        isJournalStream = false
+        listScreen = .shortcuts
+    }
+
+    public func showSettings() {
+        pushHistoryIfNeeded(for: .settings)
+        clearSelection()
+        leaveBlock()
+        closeFind()
+        isJournalStream = false
+        listScreen = .settings
     }
 
     public func renameCurrentPage(to newTitle: String) {
@@ -400,9 +431,9 @@ public final class OutlinerController: ObservableObject {
     }
 
     public var paletteItems: [PaletteItem] {
-        PaletteCommand.allCases.compactMap { command in
-            guard isAvailable(command) else { return nil }
-            return PaletteItem(command: command, title: title(for: command))
+        AppAction.allCases.compactMap { action in
+            guard action.inPalette, isAvailable(action) else { return nil }
+            return PaletteItem(action: action, title: title(for: action), shortcut: shortcuts.displayString(for: action))
         }
     }
 
@@ -411,11 +442,11 @@ public final class OutlinerController: ObservableObject {
         return paletteItems.filter { $0.matches(words) }
     }
 
-    public func isAvailable(_ command: PaletteCommand) -> Bool {
+    public func isAvailable(_ action: AppAction) -> Bool {
         let onPage = listScreen == nil && zoomedBlockId == nil
         let editablePage = onPage && !isJournalStream && (currentPage.map { $0.journalDay == nil } ?? false)
         let inOutliner = listScreen == nil && (!rows.isEmpty || selectedPageId != nil)
-        switch command {
+        switch action {
         case .findInPage: return inOutliner
         case .expandAll, .collapseAll: return inOutliner && selectedPageId != nil
         case .toggleFavorite: return onPage && currentPage != nil
@@ -423,13 +454,21 @@ public final class OutlinerController: ObservableObject {
         case .previousDay, .nextDay: return isShowingJournal
         case .goBack: return canGoBack || zoomedBlockId != nil
         case .goForward: return canGoForward
-        case .openJournals, .allPages, .toggleSidebar, .toggleTheme: return true
+        case .openPalette, .goToToday, .openJournals, .openAllPages, .searchShortcuts, .openShortcuts, .openSettings,
+             .toggleSidebar, .toggleTheme:
+            return true
+        case .focusEditor: return listScreen == nil
+        case .cycleTask, .bold, .italic, .strikethrough, .highlight, .moveBlockUp, .moveBlockDown,
+             .toggleBlockCollapse, .copyBlockMarkdown:
+            return focusedBlockId != nil
+        case .moveSelectionUp, .moveSelectionDown, .cycleSelectedTasks, .selectAllBlocks:
+            return hasBlockSelection
         }
     }
 
-    public func perform(_ command: PaletteCommand) {
-        guard isAvailable(command) else { return }
-        switch command {
+    public func perform(_ action: AppAction) {
+        guard isAvailable(action) else { return }
+        switch action {
         case .findInPage: openFind()
         case .expandAll: setAllCollapsed(false)
         case .collapseAll: setAllCollapsed(true)
@@ -439,13 +478,23 @@ public final class OutlinerController: ObservableObject {
             renameRequest &+= 1
         case .deletePage:
             pendingPageDelete = currentPage
+        case .goToToday: goToToday()
+        case .focusEditor: focusEditor()
         case .openJournals: openTodayJournal()
         case .previousDay: stepJournalDay(-1)
         case .nextDay: stepJournalDay(1)
-        case .allPages: showAllPages()
+        case .openAllPages: showAllPages()
+        case .openShortcuts: showShortcuts()
+        case .openSettings: showSettings()
         case .goBack: goBack()
         case .goForward: goForward()
-        case .toggleSidebar, .toggleTheme: break
+        case .moveSelectionUp: moveSelectedBlocks(up: true)
+        case .moveSelectionDown: moveSelectedBlocks(up: false)
+        case .cycleSelectedTasks: cycleSelectedTasks()
+        case .selectAllBlocks: selectAllBlocks()
+        case .openPalette, .searchShortcuts, .toggleSidebar, .toggleTheme, .cycleTask, .bold, .italic, .strikethrough,
+             .highlight, .moveBlockUp, .moveBlockDown, .toggleBlockCollapse, .copyBlockMarkdown:
+            break
         }
     }
 
@@ -640,23 +689,11 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
-    private func title(for command: PaletteCommand) -> String {
-        switch command {
-        case .findInPage: return "Find in Page"
-        case .expandAll: return "Expand All Blocks"
-        case .collapseAll: return "Collapse All Blocks"
-        case .toggleFavorite: return currentPage?.favorite == true ? "Remove from Favorites" : "Add to Favorites"
-        case .renamePage: return "Rename Page"
-        case .deletePage: return "Delete Page…"
-        case .openJournals: return "Go to Journals"
-        case .previousDay: return "Previous Day"
-        case .nextDay: return "Next Day"
-        case .allPages: return "Go to All Pages"
-        case .goBack: return "Back"
-        case .goForward: return "Forward"
-        case .toggleSidebar: return "Toggle Sidebar"
-        case .toggleTheme: return "Toggle Light/Dark"
+    public func title(for action: AppAction) -> String {
+        if action == .toggleFavorite {
+            return currentPage?.favorite == true ? "Remove from Favorites" : "Add to Favorites"
         }
+        return action.title
     }
 
     public func toggleFavorite(_ pageId: String) {
@@ -693,6 +730,8 @@ public final class OutlinerController: ObservableObject {
 
     private func currentNavTarget() -> NavTarget? {
         if listScreen == .allPages { return .allPages }
+        if listScreen == .shortcuts { return .shortcuts }
+        if listScreen == .settings { return .settings }
         if isJournalStream && zoomedBlockId == nil { return .journals }
         if let id = selectedPageId { return .page(id: id, zoomedBlockId: zoomedBlockId) }
         if let title = pendingJournalTitle { return .pendingJournal(title: title) }
@@ -742,6 +781,10 @@ public final class OutlinerController: ObservableObject {
                 journals = try graph.listJournals(limit: 30)
                 pageSummaries = try graph.listPageSummaries()
             }
+        case .shortcuts:
+            listScreen = .shortcuts
+        case .settings:
+            listScreen = .settings
         case let .pendingJournal(title):
             listScreen = nil
             zoomedBlockId = nil
@@ -798,6 +841,29 @@ public final class OutlinerController: ObservableObject {
 
     public func blurFocus() {
         leaveBlock()
+    }
+
+    public func goToToday() {
+        openTodayJournal()
+        focusEndOfPage()
+    }
+
+    public func focusEditor() {
+        guard focusedBlockId == nil else { return }
+        if let last = lastEditedBlockId, let row = rows.first(where: { $0.id == last }) {
+            focusBlock(row.id, cursorOffset: TextOffsets.length(BlockPresentation.editable(row).text))
+            return
+        }
+        focusEndOfPage()
+    }
+
+    private func focusEndOfPage() {
+        let pageRows = isJournalStream ? Array(rows[journalSections.first?.rowRange ?? 0..<0]) : rows
+        guard let last = pageRows.last else {
+            ensureFirstBlockAndFocus()
+            return
+        }
+        focusBlock(last.id, cursorOffset: TextOffsets.length(BlockPresentation.editable(last).text))
     }
 
     public var hasBlockSelection: Bool {
@@ -1418,6 +1484,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     private func beginEditing(_ row: FfiFlatBlockRow) {
+        lastEditedBlockId = row.id
         focusedBlockId = row.id
         rebase(on: row)
         draftText = draftBaseText
