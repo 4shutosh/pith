@@ -77,9 +77,43 @@ public enum PageDirectory {
         }
     }
 
+    public static func merge(_ library: PageLibrary, counts: [FfiPageSummary]) -> [FfiPageSummary] {
+        let known = Dictionary(counts.map { ($0.page.id, $0) }, uniquingKeysWith: { _, newer in newer })
+        return library.byId.values.map { page in
+            FfiPageSummary(
+                page: page,
+                blockCount: known[page.id]?.blockCount ?? 0,
+                backlinkCount: known[page.id]?.backlinkCount ?? 0
+            )
+        }
+    }
+
     public static func offersCreate(query: String, in summaries: [FfiPageSummary]) -> Bool {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         return !summaries.contains { $0.page.title.caseInsensitiveCompare(trimmed) == .orderedSame }
+    }
+}
+
+public struct PageDirectoryLayout: Equatable {
+    public let stacksHeader: Bool
+    public let compactSort: Bool
+    public let showsCounts: Bool
+    public let updatedInColumn: Bool
+
+    public init(stacksHeader: Bool, compactSort: Bool, showsCounts: Bool, updatedInColumn: Bool) {
+        self.stacksHeader = stacksHeader
+        self.compactSort = compactSort
+        self.showsCounts = showsCounts
+        self.updatedInColumn = updatedInColumn
+    }
+
+    public init(width: CGFloat) {
+        self.init(
+            stacksHeader: width < 520,
+            compactSort: width < 560,
+            showsCounts: width >= 430,
+            updatedInColumn: width >= 300
+        )
     }
 }

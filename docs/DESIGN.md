@@ -19,7 +19,8 @@ A new value goes into one of these first, then gets used. Never write a raw numb
 ## Layout
 
 - **Three zones.** A 38 pt title-bar band, a 216 pt sidebar with a 1 pt divider, and the editor pane.
-- **One column.** Content is at most 680 pt wide, centred in the pane beside the sidebar (not in the window), with at least 64 pt either side. Every screen in the pane uses `EditorLayout`. Table-like screens (All pages) may widen to `directoryWidth` (820 pt) through the same function; nothing computes its own layout.
+- **One column.** Content is at most 680 pt wide, centred in the pane beside the sidebar (not in the window). Side margins are 64 pt and shrink to 24 pt as the pane narrows; the column shrinks with them. The window can be as small as 360 × 400 pt so it fits laptop grids. The sidebar docks only while the pane keeps a 320 pt column with 24 pt margins (windows ≥ 585 pt); narrower, the sidebar never docks: hovering the sidebar toggle slides it over the content (with a shadow) until the pointer leaves, and clicking the toggle or ⌘\\ pins it open until a click outside or opening a page. The docked open/closed choice is kept for when the window is wide again.
+- **Window chrome row.** The traffic lights and window-level controls (sidebar toggle, theme) share one row whose height is twice the traffic lights' measured centre, so they line up. With the sidebar docked the row belongs to the sidebar column (sidebar colour) and the editor takes no space for it: its surface runs to the top of the window. With the sidebar hidden or the window narrow, the row is the surface colour with no divider and the editor starts below it. The row sits above the content in z-order and is native window chrome across its full width: drag moves the window, double-click follows the system's title-bar setting (zoom by default). Future tabs go in this row.
 - **Content starts 58 pt below the window top.**
 - **Bullets inside the column.** A block row is a 14 pt disclosure, an 18 pt bullet column, an 8 pt gap and the text. Only the hover-only disclosure arrow sits in the margin; the bullet column starts on the column edge, so bullets line up under the first letter of the title and nesting steps inward 24 pt.
 - **Window controls.** Title-bar buttons sit 78 pt from the left and are centred on the traffic lights at y = 16. Anything always available (sidebar toggle, theme) lives there, not inside the sidebar.
@@ -62,6 +63,22 @@ No other sizes. Weight carries emphasis (regular, medium, semibold); size carrie
 
 ## Components
 
+Screens are built from `PithMacApp/Components.swift` and `FilterChips.swift`; a screen never re-implements one of these. `DesignRulesTests` fails if a screen declares its own grid, keycap or screen title.
+
+| Need | Component | Narrow behaviour |
+| :--- | :--- | :--- |
+| Screen title, subtitle, trailing action | `ScreenHeader` (`ScreenTitle` alone for custom headers) | Title never wraps; the trailing action drops below the title |
+| Filter / search input | `SearchField` | Fills the width it is given |
+| Filter tabs | `ChipRow` + `FilterChip` | Labels never truncate; the row scrolls with an edge fade |
+| Keys | `Keycap`, `KeycapRow`, `KeyHint` | Fixed size |
+| Section heading | `SectionLabel` | — |
+| Grouped panel | `Card` (title, count, content padding) | — |
+| Card grids | `AdaptiveGrid` (`AdaptiveColumns` decides the count) | Two columns only when each gets its minimum width |
+| Setting with a control | `SettingRow` + `SegmentedGroup` | Control moves under its label below 520 pt; controls never truncate |
+| Secondary action | `SecondaryButton` | Fixed size |
+
+Width-driven decisions (`EditorLayout`, `AdaptiveColumns`, `PageDirectoryLayout`) are pure functions in `PithMacCore` with tests; views only read them. Check every screen at 1280, 520 and 380 pt wide with snapshot mode before calling UI work done.
+
 - **Radii:** 6 for rows and small controls, 7 for fields and list rows, 8 for cards.
 - **Icons mark landmarks and state, never repeating content.** Fixed navigation items and section headers get an icon (Journals, All pages, Favorites, Recent), as do state (task marks, the favorite star in All pages), function (the collapse arrow, the window-control toggles) and a field's identity (the search magnifier). Repeating rows such as page lists have none. Icons are drawn with SwiftUI shapes in `Icons.swift`, 14–15 pt frames, strokes of 1.1–1.25 pt, coloured by the foreground; no SF Symbols.
 - **Hit targets:** at least 24 pt; rows and toolbar buttons 28 pt.
@@ -88,7 +105,7 @@ No other sizes. Weight carries emphasis (regular, medium, semibold); size carrie
 ## Interaction
 
 - **One selection.** The sidebar highlights at most one item for the current view (`sidebarDestination`). A page never appears in two sidebar lists.
-- **Favorites are pinned.** They never scroll with Recent.
+- **Unified scrollable sidebar sections.** Favorites, custom user sections, and Recent live inside one vertical scroll area with collapsible headers so no section can starve or clip another.
 - **Shortcut hints appear on hover**, not permanently.
 - **Destructive actions confirm** wherever they appear and stay undoable with ⌘Z. The same action behaves the same everywhere.
 - **Pointers match affordance.** Clickable controls, rows, links, bullets, chevrons, and menus use `.cursor(.pointingHand)` (`CursorModifier.swift`, pure SwiftUI `onContinuousHover`; never an embedded AppKit view, which breaks SwiftUI hover on the row, and never `NSCursor.push`/`pop`); text inputs and block prose use `.iBeam`; non-interactive chrome and empty canvas keep `.arrow`.
@@ -105,3 +122,13 @@ No other sizes. Weight carries emphasis (regular, medium, semibold); size carrie
 
    At 1280 × 820 pt the captures are 2 px per pt. Check that the new element shares the column's left and right edges, sits on the 4 pt grid, and looks right in light and dark.
 3. If a rule had to bend, change this file and the token in the same change.
+
+## State and performance
+
+- **Views observe the narrowest model.** High-frequency state that only one surface shows lives in its own `ObservableObject` on the controller: palette search (`PaletteSearch`), find (`FindState`), All-pages counts (`PageDirectoryModel`). Typing in one of them never re-renders the outline or sidebar.
+- **Publish only real changes.** Assign published values through `update(_:to:)`, which skips equal values.
+- **Rows are `Equatable` over everything they display** (`.equatable()`), and read nothing else from the controller in `body`; computed inputs (find matches) are passed in.
+- **Writes refresh through the change feed.** After any write, local or external, call `applyChanges()`; it patches stale rows and reloads only pages whose tree changed. Navigation calls `loadView()`. Never reload the page list on navigation.
+- **Slow reads leave the main thread.** Search and block-ref completion run on the interactive `worker`, counts and bulk work on `background`, each through a `SingleFlight` so only the newest request runs. Never queue interactive work behind background work.
+- **Measure at scale.** `PITH_PERF=1 swift test -c release --filter PerformanceTests` includes a 10k-page run; `PITH_SEED_PATH=<file>` writes a large graph for Instruments.
+

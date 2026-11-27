@@ -189,7 +189,7 @@ final class OutlinerTests: XCTestCase {
             ops: [.updateBlock(id: id, content: content, expectedVersion: nil)],
             meta: FfiTxMeta(writer: .user, actor: "setup", session: nil, summary: "seed", undoGroup: nil)
         )
-        controller.reload()
+        controller.applyChanges()
         return id
     }
 
@@ -253,7 +253,7 @@ final class OutlinerTests: XCTestCase {
         try type(controller, "two")
         var pagePublishes = 0
         var backlinkPublishes = 0
-        let pagesWatch = controller.$pages.dropFirst().sink { _ in pagePublishes += 1 }
+        let pagesWatch = controller.$library.dropFirst().sink { _ in pagePublishes += 1 }
         let backlinksWatch = controller.$backlinks.dropFirst().sink { _ in backlinkPublishes += 1 }
 
         try type(controller, "two more")
@@ -265,7 +265,7 @@ final class OutlinerTests: XCTestCase {
         backlinksWatch.cancel()
 
         try type(controller, "two more [[New Page]]")
-        XCTAssertTrue(controller.pages.contains { $0.title == "New Page" })
+        XCTAssertTrue(controller.library.contains { $0.title == "New Page" })
     }
 
     func testTypingDoesNotRepublishTheController() throws {
@@ -446,7 +446,7 @@ final class OutlinerTests: XCTestCase {
         controller.selectPage(alphaId)
         controller.perform(.deletePage)
         controller.confirmPendingDelete()
-        XCTAssertFalse(controller.pages.contains { $0.id == alphaId })
+        XCTAssertFalse(controller.library.contains { $0.id == alphaId })
     }
 
     func testSlashMenuInsertsDateAndTaskCommands() throws {

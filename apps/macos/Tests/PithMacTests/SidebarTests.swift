@@ -87,7 +87,7 @@ final class SidebarTests: XCTestCase {
         controller.deletePage(second)
 
         XCTAssertEqual(controller.selectedPageId, first)
-        XCTAssertFalse(controller.pages.contains { $0.id == second })
+        XCTAssertFalse(controller.library.contains { $0.id == second })
     }
 
     func testPageDirectoryFiltersAndSortsSummaries() {
@@ -140,5 +140,36 @@ final class SidebarTests: XCTestCase {
         )
         XCTAssertTrue(PageDirectory.offersCreate(query: "Gamma", in: items))
         XCTAssertFalse(PageDirectory.offersCreate(query: "alpha", in: items))
+    }
+}
+
+final class PageDirectoryLayoutTests: XCTestCase {
+    func testTheDirectoryDropsDetailAsTheColumnNarrows() {
+        XCTAssertEqual(PageDirectoryLayout(width: 820), PageDirectoryLayout(stacksHeader: false, compactSort: false, showsCounts: true, updatedInColumn: true))
+        XCTAssertEqual(PageDirectoryLayout(width: 540), PageDirectoryLayout(stacksHeader: false, compactSort: true, showsCounts: true, updatedInColumn: true))
+        XCTAssertEqual(PageDirectoryLayout(width: 500), PageDirectoryLayout(stacksHeader: true, compactSort: true, showsCounts: true, updatedInColumn: true))
+        XCTAssertEqual(PageDirectoryLayout(width: 390), PageDirectoryLayout(stacksHeader: true, compactSort: true, showsCounts: false, updatedInColumn: true))
+        XCTAssertEqual(PageDirectoryLayout(width: 290), PageDirectoryLayout(stacksHeader: true, compactSort: true, showsCounts: false, updatedInColumn: false))
+    }
+}
+
+final class PageDirectoryMergeTests: XCTestCase {
+    private func page(_ id: String, _ title: String, favorite: Bool = false) -> FfiPage {
+        FfiPage(id: id, title: title, journalDay: nil, documentMode: false, favorite: favorite, version: 1, updatedAt: 0)
+    }
+
+    func testTheListFollowsTheLibraryWhileCountsCatchUp() {
+        let library = PageLibrary([page("a", "Alpha renamed", favorite: true), page("b", "Brand new")])
+        let staleCounts = [
+            FfiPageSummary(page: page("a", "Alpha"), blockCount: 3, backlinkCount: 2),
+            FfiPageSummary(page: page("c", "Deleted since"), blockCount: 9, backlinkCount: 9),
+        ]
+
+        let merged = PageDirectory.merge(library, counts: staleCounts).sorted { $0.page.id < $1.page.id }
+
+        XCTAssertEqual(merged.map(\.page.title), ["Alpha renamed", "Brand new"])
+        XCTAssertEqual(merged.map(\.page.favorite), [true, false])
+        XCTAssertEqual(merged.map(\.blockCount), [3, 0])
+        XCTAssertEqual(merged.map(\.backlinkCount), [2, 0])
     }
 }

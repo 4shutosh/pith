@@ -139,7 +139,12 @@ final class AppearanceTests: XCTestCase {
         XCTAssertEqual(EditorLayout.compute(windowWidth: 1280, sidebarOpen: true), EditorLayout(leading: 408.5, width: 680))
         XCTAssertEqual(EditorLayout.compute(windowWidth: 1280, sidebarOpen: false), EditorLayout(leading: 300, width: 680))
         XCTAssertEqual(EditorLayout.compute(windowWidth: 820, sidebarOpen: true), EditorLayout(leading: 281, width: 475))
-        XCTAssertEqual(EditorLayout.compute(windowWidth: 600, sidebarOpen: true), EditorLayout(leading: 281, width: 320))
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 600, sidebarOpen: true), EditorLayout(leading: 248.5, width: 320))
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 560, sidebarOpen: true), EditorLayout(leading: 64, width: 432))
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 360, sidebarOpen: true), EditorLayout(leading: 24, width: 312))
+        XCTAssertEqual(EditorLayout.compute(windowWidth: 360, sidebarOpen: false), EditorLayout(leading: 24, width: 312))
+        XCTAssertTrue(EditorLayout.sidebarDocks(windowWidth: 585))
+        XCTAssertFalse(EditorLayout.sidebarDocks(windowWidth: 584))
         XCTAssertEqual(
             EditorLayout.compute(windowWidth: 1280, sidebarOpen: true, maximumWidth: EditorLayout.directoryWidth),
             EditorLayout(leading: 338.5, width: 820)
@@ -158,7 +163,7 @@ final class AppearanceTests: XCTestCase {
             FfiPage(id: title, title: title, journalDay: nil, documentMode: false, favorite: false, version: 1, updatedAt: updated)
         }
         let pages = [page("Old", 10), page("Newest", 30), page("Middle", 20)]
-        XCTAssertEqual(OutlinerController.recent(pages, limit: 2).map(\.title), ["Newest", "Middle"])
+        XCTAssertEqual(PageLibrary.recent(pages, limit: 2).map(\.title), ["Newest", "Middle"])
     }
 
     func testSidebarRoutesBetweenTodayAndAllPages() throws {
@@ -183,5 +188,15 @@ final class AppearanceTests: XCTestCase {
         XCTAssertEqual(BlockStyle.baselineOffset, ((24 - natural) / 2).rounded())
         XCTAssertGreaterThan(BlockStyle.baselineOffset, 0)
         XCTAssertEqual(BlockStyle.editingAttributes[.baselineOffset] as? CGFloat, BlockStyle.baselineOffset)
+    }
+}
+
+final class AdaptiveColumnsTests: XCTestCase {
+    func testTwoColumnsOnlyWhenEachGetsItsMinimumWidth() {
+        XCTAssertEqual(AdaptiveColumns.count(width: 612, minimumColumnWidth: 300, spacing: 12, maximum: 2), 2)
+        XCTAssertEqual(AdaptiveColumns.count(width: 611, minimumColumnWidth: 300, spacing: 12, maximum: 2), 1)
+        XCTAssertEqual(AdaptiveColumns.count(width: 1300, minimumColumnWidth: 300, spacing: 12, maximum: 2), 2)
+        XCTAssertEqual(AdaptiveColumns.count(width: 1300, minimumColumnWidth: 300, spacing: 12, maximum: 4), 4)
+        XCTAssertEqual(AdaptiveColumns.count(width: 120, minimumColumnWidth: 300, spacing: 12, maximum: 2), 1)
     }
 }

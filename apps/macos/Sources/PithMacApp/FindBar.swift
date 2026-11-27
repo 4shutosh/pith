@@ -2,7 +2,8 @@ import PithMacCore
 import SwiftUI
 
 struct FindBar: View {
-    @ObservedObject var controller: OutlinerController
+    let controller: OutlinerController
+    @ObservedObject var find: FindState
     @FocusState private var isFieldFocused: Bool
 
     var body: some View {
@@ -11,7 +12,7 @@ struct FindBar: View {
                 .foregroundColor(Theme.textTertiary)
 
             TextField("Find in page…", text: Binding(
-                get: { controller.findQuery },
+                get: { find.query },
                 set: { controller.updateFindQuery($0) }
             ))
             .textFieldStyle(.plain)
@@ -21,20 +22,20 @@ struct FindBar: View {
             .frame(width: 180)
             .onAppear { isFieldFocused = true }
 
-            if !controller.findQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !find.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(matchLabel)
                     .font(Typography.ui(TypeScale.meta))
-                    .foregroundColor(controller.findMatches.isEmpty ? Theme.danger : Theme.textTertiary)
+                    .foregroundColor(find.matches.isEmpty ? Theme.danger : Theme.textTertiary)
                     .monospacedDigit()
                     .contentTransition(.numericText())
-                    .animation(Motion.fast, value: controller.activeFindIndex)
+                    .animation(Motion.fast, value: find.activeIndex)
             }
 
             HStack(spacing: 2) {
-                FindNavButton(direction: .up, disabled: controller.findMatches.isEmpty) {
+                FindNavButton(direction: .up, disabled: find.matches.isEmpty) {
                     controller.previousFindMatch()
                 }
-                FindNavButton(direction: .down, disabled: controller.findMatches.isEmpty) {
+                FindNavButton(direction: .down, disabled: find.matches.isEmpty) {
                     controller.nextFindMatch()
                 }
                 FindCloseButton {
@@ -48,7 +49,7 @@ struct FindBar: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.elevatedBorder, lineWidth: 1))
         .shadow(color: Theme.shadow, radius: 16, y: 6)
-        .keyScope(.overlay, whileEditingText: true, isActive: controller.isFindOpen) { stroke in
+        .keyScope(.overlay, whileEditingText: true, isActive: find.isOpen) { stroke in
             switch (stroke.key, stroke.modifiers) {
             case (.escape, []):
                 controller.closeFind()
@@ -66,10 +67,10 @@ struct FindBar: View {
     }
 
     private var matchLabel: String {
-        if controller.findMatches.isEmpty {
+        if find.matches.isEmpty {
             return "0 / 0"
         }
-        return "\(controller.activeFindIndex + 1) / \(controller.findMatches.count)"
+        return "\(find.activeIndex + 1) / \(find.matches.count)"
     }
 }
 

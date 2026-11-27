@@ -57,6 +57,16 @@ final class DesignRulesTests: XCTestCase {
         XCTAssertEqual(found, [], "draw icons in Icons.swift and use Typography fonts (docs/DESIGN.md)")
     }
 
+    func testScreensBuildFromSharedComponents() throws {
+        let sources = try sources()
+        let grids = try violations(#"LazyVGrid\("#, in: sources) { source, _, _ in source.path == "Components.swift" }
+        XCTAssertEqual(grids, [], "use AdaptiveGrid so columns collapse when narrow (docs/DESIGN.md)")
+        let keycaps = try violations(#"struct \w*Key(cap|Hint)\w*\b"#, in: sources) { source, _, _ in source.path == "Components.swift" }
+        XCTAssertEqual(keycaps, [], "use Keycap / KeycapRow from Components.swift (docs/DESIGN.md)")
+        let titles = try violations(#"TypeScale\.pageTitle"#, in: sources) { source, _, _ in source.path == "Components.swift" }
+        XCTAssertEqual(titles, [], "use ScreenHeader or ScreenTitle (docs/DESIGN.md)")
+    }
+
     func testTheTypeScaleMatchesTheDocumentedSteps() {
         XCTAssertEqual(TypeScale.sans, [11, 12, 13, 14, 15, 17, 22, 28])
         XCTAssertEqual(TypeScale.mono, [13.5])

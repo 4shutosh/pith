@@ -10,6 +10,8 @@ import XCTest
 private final class HarnessState: ObservableObject {
     @Published var showSearch = false
     @Published var showSidebar = true
+    @Published var sidebarCompact = false
+    @Published var sidebarPeek = false
     @Published var themeMode: ThemeMode = .dark
 }
 
@@ -25,6 +27,8 @@ private struct HarnessHostView: View {
             shortcuts: shortcuts,
             showSearch: $state.showSearch,
             showSidebar: $state.showSidebar,
+            sidebarCompact: $state.sidebarCompact,
+            sidebarPeek: $state.sidebarPeek,
             themeMode: $state.themeMode,
             keyRouter: keyRouter,
             monitorSystemEvents: false
@@ -152,7 +156,7 @@ final class KeyboardJourneyTests: XCTestCase {
         _ = try harness.graph.applyOps(ops: [
             .createPage(id: pageId, title: "Roadmap", journalDay: nil, documentMode: false),
         ], meta: setupMeta)
-        harness.controller.reload()
+        harness.controller.applyChanges()
         harness.pump()
 
         XCTAssertEqual(harness.keyRouter.registrationCount(in: .global), 1)
@@ -222,14 +226,14 @@ final class KeyboardJourneyTests: XCTestCase {
         XCTAssertEqual(harness.controller.rows.count, 2)
 
         XCTAssertTrue(harness.press(try XCTUnwrap(AppAction.findInPage.defaultCombo)))
-        XCTAssertTrue(harness.controller.isFindOpen)
+        XCTAssertTrue(harness.controller.find.isOpen)
         XCTAssertEqual(harness.keyRouter.registrationCount(in: .overlay), 1)
 
         XCTAssertFalse(harness.press(try XCTUnwrap(AppAction.openAllPages.defaultCombo)))
         XCTAssertNil(harness.controller.listScreen)
 
         XCTAssertTrue(harness.press(.escape, editing: true))
-        XCTAssertFalse(harness.controller.isFindOpen)
+        XCTAssertFalse(harness.controller.find.isOpen)
         XCTAssertEqual(harness.keyRouter.registrationCount(in: .overlay), 0)
 
         XCTAssertTrue(harness.press(try XCTUnwrap(AppAction.collapseAll.defaultCombo)))

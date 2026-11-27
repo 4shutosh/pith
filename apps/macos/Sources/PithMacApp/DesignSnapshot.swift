@@ -49,6 +49,9 @@ enum DesignSnapshot {
             scrollLongestToBottom(in: window)
             await capture(window, directory, "\(mode.rawValue)-8-shortcuts-scrolled")
 
+            controller.showSettings()
+            await capture(window, directory, "\(mode.rawValue)-9-settings")
+
             controller.openTodayJournal()
             showSidebar.wrappedValue = false
             await capture(window, directory, "\(mode.rawValue)-6-sidebar-hidden")
@@ -74,7 +77,7 @@ enum DesignSnapshot {
         longest.reflectScrolledClipView(longest.contentView)
     }
 
-    static func capture(_ window: NSWindow, _ directory: URL, _ name: String) async {
+    private static func capture(_ window: NSWindow, _ directory: URL, _ name: String) async {
         try? await Task.sleep(nanoseconds: 700_000_000)
         guard let image = CGWindowListCreateImage(
             .null,

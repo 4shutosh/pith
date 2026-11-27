@@ -9,3 +9,8 @@ public struct JournalSection: Equatable {
         self.rowRange = rowRange
     }
 }
+
+public struct EarlierRowsAnchor: Equatable {
+    public let blockId: String
+    public let seq: UInt64
+}

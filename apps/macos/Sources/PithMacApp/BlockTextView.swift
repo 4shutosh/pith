@@ -244,6 +244,11 @@ final class PithTextView: NSTextView {
         }
     }
 
+    static func linePiece(containing point: NSPoint, in pieces: [NSRect]) -> NSRect? {
+        pieces.first { $0.minY <= point.y && point.y <= $0.maxY }
+            ?? pieces.min { abs($0.midY - point.y) < abs($1.midY - point.y) }
+    }
+
     private func spanBoundingRect(at point: NSPoint) -> NSRect? {
         guard let layout = layoutManager, let container = textContainer, let storage = textStorage,
               storage.length > 0 else { return nil }
@@ -256,10 +261,15 @@ final class PithTextView: NSTextView {
             || storage.attribute(.pithBlockRefId, at: index, effectiveRange: &effectiveRange) != nil
         guard hasAttr, effectiveRange.length > 0 else { return nil }
         let glyphRange = layout.glyphRange(forCharacterRange: effectiveRange, actualCharacterRange: nil)
-        var rect = layout.boundingRect(forGlyphRange: glyphRange, in: container)
-        rect.origin.x += textContainerOrigin.x
-        rect.origin.y += textContainerOrigin.y
-        return rect
+        var pieces: [NSRect] = []
+        layout.enumerateEnclosingRects(
+            forGlyphRange: glyphRange,
+            withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+            in: container
+        ) { rect, _ in
+            pieces.append(rect.offsetBy(dx: self.textContainerOrigin.x, dy: self.textContainerOrigin.y))
+        }
+        return Self.linePiece(containing: point, in: pieces)
     }
 
     private func applyHoverCursor(for event: NSEvent) {
@@ -300,8 +310,19 @@ final class PithTextView: NSTextView {
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = abs(newSize.width - frame.width) > 0.5
         super.setFrameSize(newSize)
         textContainer?.containerSize = NSSize(width: newSize.width, height: .greatestFiniteMagnitude)
+        if widthChanged, abs(fittingHeight(forWidth: newSize.width) - newSize.height) > 0.5 {
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        if abs(fittingHeight(forWidth: frame.width) - frame.height) > 0.5 {
+            invalidateIntrinsicContentSize()
+        }
     }
 
     func fittingHeight(forWidth width: CGFloat) -> CGFloat {
@@ -412,7 +433,7 @@ struct BlockTextView: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isVerticallyResizable = true
+        textView.isVerticallyResizable = false
         textView.isHorizontallyResizable = false
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
@@ -433,7 +454,7 @@ struct BlockTextView: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: PithTextView, context: Context) -> CGSize? {
-        let width = proposal.width ?? 600
+        let width = proposal.width ?? (nsView.frame.width > 0 ? nsView.frame.width : BlockStyle.fallbackWidth)
         return CGSize(width: width, height: nsView.fittingHeight(forWidth: width))
     }
 

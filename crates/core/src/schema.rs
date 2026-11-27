@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::error::Result;
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 const MIGRATION_V1: &str = "
 CREATE TABLE pages (
@@ -129,6 +129,22 @@ const MIGRATION_V3: &str = "
 ALTER TABLE pages ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
 ";
 
+const MIGRATION_V4: &str = "
+CREATE TABLE view_log (
+    seq INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    op TEXT NOT NULL
+);
+";
+
+const MIGRATION_V5: &str = "
+CREATE INDEX idx_blocks_page_live ON blocks(page_id, deleted_at);
+DROP INDEX idx_blocks_page;
+CREATE INDEX idx_refs_target_src ON refs(target, src_block);
+DROP INDEX idx_refs_target;
+";
+
 pub fn configure_and_migrate(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -150,6 +166,14 @@ pub fn configure_and_migrate(conn: &mut Connection) -> Result<()> {
         if version < 3 {
             tx.execute_batch(MIGRATION_V3)?;
             tx.pragma_update(None, "user_version", 3)?;
+        }
+        if version < 4 {
+            tx.execute_batch(MIGRATION_V4)?;
+            tx.pragma_update(None, "user_version", 4)?;
+        }
+        if version < 5 {
+            tx.execute_batch(MIGRATION_V5)?;
+            tx.pragma_update(None, "user_version", 5)?;
         }
         tx.commit()?;
     }

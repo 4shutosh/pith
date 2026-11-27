@@ -293,6 +293,11 @@ fn a_version_1_database_migrates_and_supports_undo_groups() -> Result<()> {
             "DROP INDEX idx_txns_actor_undo_group;
              ALTER TABLE txns DROP COLUMN undo_group;
              ALTER TABLE pages DROP COLUMN favorite;
+             DROP TABLE view_log;
+             DROP INDEX idx_blocks_page_live;
+             CREATE INDEX idx_blocks_page ON blocks(page_id);
+             DROP INDEX idx_refs_target_src;
+             CREATE INDEX idx_refs_target ON refs(target);
              PRAGMA user_version = 1;",
         )?;
         drop(raw);

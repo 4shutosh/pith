@@ -54,24 +54,24 @@ final class M4dOutlinerTests: XCTestCase {
         controller.openFind()
         controller.updateFindQuery("alpha")
 
-        XCTAssertEqual(controller.findMatches.count, 3)
-        XCTAssertEqual(controller.activeFindIndex, 0)
-        XCTAssertEqual(controller.activeFindOrdinal(in: b1), 0)
+        XCTAssertEqual(controller.find.matches.count, 3)
+        XCTAssertEqual(controller.find.activeIndex, 0)
+        XCTAssertEqual(controller.find.activeOrdinal(in: b1), 0)
 
         controller.nextFindMatch()
-        XCTAssertEqual(controller.activeFindIndex, 1)
-        XCTAssertEqual(controller.activeFindOrdinal(in: b1), 1)
+        XCTAssertEqual(controller.find.activeIndex, 1)
+        XCTAssertEqual(controller.find.activeOrdinal(in: b1), 1)
 
         controller.nextFindMatch()
-        XCTAssertEqual(controller.activeFindIndex, 2)
-        XCTAssertEqual(controller.activeFindOrdinal(in: b2), 0)
+        XCTAssertEqual(controller.find.activeIndex, 2)
+        XCTAssertEqual(controller.find.activeOrdinal(in: b2), 0)
 
         controller.previousFindMatch()
-        XCTAssertEqual(controller.activeFindIndex, 1)
+        XCTAssertEqual(controller.find.activeIndex, 1)
 
         controller.closeFind()
-        XCTAssertFalse(controller.isFindOpen)
-        XCTAssertTrue(controller.findMatches.isEmpty)
+        XCTAssertFalse(controller.find.isOpen)
+        XCTAssertTrue(controller.find.matches.isEmpty)
     }
 
     func testExpandAndCollapseAllToggleHierarchy() throws {

@@ -20,7 +20,7 @@ For notes on prior art, see [research/logseq-db.md](research/logseq-db.md).
 | D9 | **Writes are conditional.** Pages and blocks have a `version`. Content and structural writes from agents (`update`, `move`, `delete`) pass `expected_version` and fail on mismatch. | An agent can never silently overwrite a change it hasn't seen. |
 | D10 | **Undo history is persistent, in SQLite, and filterable by actor.** If one entry can't be applied, it is skipped; history is only trimmed by GC (D7). | Undo survives restarts and is available to every surface. A whole agent session can be reverted. |
 | D11 | **Stable UUIDv7 IDs and fractional-index sibling ordering**, with a deterministic tie-break (uuid) to repair duplicate keys. | A move rewrites one row. Concurrent inserts and moves merge cleanly, which is what sync needs. |
-| D12 | **No daemon.** The core is a library. Each process opens SQLite in WAL mode with `BEGIN IMMEDIATE` + `busy_timeout`. Long-lived apps detect external writes via `PRAGMA data_version` and a txn cursor. | SQLite already serialises writers safely. Add a daemon only if change-notification latency demands it. |
+| D12 | **No daemon.** The core is a library. Each process opens SQLite in WAL mode with `BEGIN IMMEDIATE` + `busy_timeout`. Long-lived apps detect external writes via `PRAGMA data_version` and read what changed through the change cursor (§3). | SQLite already serialises writers safely. Add a daemon only if change-notification latency demands it. |
 | D13 | **Search is FTS5 with the `trigram` tokenizer, in the same database, updated synchronously in the write txn, and rebuildable from content.** The tokenizer is fixed in the schema. Page titles and block text have separate indexes: `pages_fts` holds live page titles, `blocks_fts` holds each block's own text with `[[page]]`/`#tag` UUIDs rendered to titles; `((block refs))` are neither expanded nor indexed. A search returns page hits first, then one hit per matching line of each matching block, in document order. A line hit carries its breadcrumb (page and ancestor blocks), the line split into highlighted and plain segments, and the cursor offset of the match (in Unicode scalars, the unit for every text offset the core exchanges). Queries shorter than 3 characters return only page hits, by title prefix. | Trigram gives substring matches ("map" finds "Roadmap") and works for languages without word spaces. Separate title and text indexes make every page findable, including empty ones, and stop one page's blocks from crowding out results just because its title matches. Prefix lookup keeps short queries index-backed. Search is never stale. Not expanding block refs means editing a block re-indexes only that block. |
 
 ---
@@ -61,6 +61,7 @@ txns       (seq INTEGER PRIMARY KEY, id BLOB UNIQUE /* uuidv7 */, ts,
 ops        (txn_id BLOB, seq INTEGER, forward JSON, inverse JSON, PRIMARY KEY (txn_id, seq))
 txn_blocks (txn_id BLOB, block_id BLOB)   -- which blocks/pages each txn touched (page ids share the column)
   INDEX (block_id, txn_id)                -- undo conflict checks, per-block history
+view_log   (seq INTEGER PRIMARY KEY, ts, actor TEXT, op JSON)   -- view-state ops; never undone
 ```
 
 **Invariants**
@@ -92,7 +93,7 @@ apply_ops(ops, TxMeta{origin, actor, session, summary})
        - rename_page → re-index blocks_fts for blocks that link to that page
      bump version, stamp updated_by
   5. check invariants (§2)
-  6. insert txns, ops, txn_blocks rows
+  6. insert txns, ops, txn_blocks rows; view-state ops go to view_log
   7. COMMIT
 ```
 
@@ -108,7 +109,9 @@ Markdown export/mirroring runs explicitly (`pith export`) or as a debounced hook
 - **Helpers that compile to content ops:**
   - property set/remove and task-state toggles rewrite the block's text through `update_block` (D2)
   - indent, outdent and move up/down become `move_block`
-- **View-state ops** `set_collapsed` and `set_page_favorite`: persisted and synced, but they do not bump `version` and are not recorded for undo.
+- **View-state ops** `set_collapsed` and `set_page_favorite`: persisted and synced, but they do not bump `version` and are not recorded for undo. They are appended to `view_log` instead of `txns`, in the same transaction, so readers and sync see them while undo history and its conflict checks never do.
+
+**Change feed.** A long-lived reader keeps a cursor (the newest `txns` and `view_log` seqs) and asks the core what changed after it. The core answers in viewer terms, derived from the logged ops: pages whose row changed (created, renamed, deleted, restored, favorited), pages whose visible tree changed (insert, move from or to, delete, restore, collapse), and blocks whose displayed row is stale (edited blocks, plus every block that displays a changed block or page through a ref). Past a fixed number of ops it answers "reload everything" instead of diffing. Readers apply their own writes through the same feed, so there is one refresh path for local, external and synced changes.
 
 **Undo** applies the `inverse` ops of txn T as a new txn with `origin=undo, undoes=T`. Its checks and its write run in one `BEGIN IMMEDIATE` transaction, so two processes can't both undo T. Only undo can create `origin=undo` txns; `apply_ops` rejects that origin from callers.
 

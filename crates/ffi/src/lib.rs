@@ -8,9 +8,10 @@ use pith_core::parser::{
 };
 use pith_core::snippet::Segment;
 use pith_core::{
-    ApplyResult, Backlink, BlockKind, BlockLocation, BlockProp, ChangeEntry, ChangeFeed,
-    EditOutcome, Error, FlatBlockRow, Id, LinkPreview, Op, Origin, Page, PageMatch, PageSummary,
-    PageWindow, PreviewLine, RenderedSpan, SearchHit, Store, TxMeta, UnlinkedRef, order,
+    ApplyResult, Backlink, BlockKind, BlockLocation, BlockProp, ChangeCursor, ChangeEntry,
+    ChangeFeed, EditOutcome, Error, FlatBlockRow, GraphChanges, Id, LinkPreview, Op, Origin, Page,
+    PageMatch, PageSummary, PageWindow, PreviewLine, RenderedSpan, SearchHit, Store, TxMeta,
+    UnlinkedRef, order,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -831,6 +832,52 @@ pub struct FfiChangeFeed {
     pub entries: Vec<FfiChangeEntry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct FfiChangeCursor {
+    pub txn_seq: i64,
+    pub view_seq: i64,
+}
+
+impl From<ChangeCursor> for FfiChangeCursor {
+    fn from(cursor: ChangeCursor) -> Self {
+        Self {
+            txn_seq: cursor.txn_seq,
+            view_seq: cursor.view_seq,
+        }
+    }
+}
+
+impl From<FfiChangeCursor> for ChangeCursor {
+    fn from(cursor: FfiChangeCursor) -> Self {
+        Self {
+            txn_seq: cursor.txn_seq,
+            view_seq: cursor.view_seq,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiGraphChanges {
+    pub cursor: FfiChangeCursor,
+    pub reload_all: bool,
+    pub pages: Vec<String>,
+    pub restructured_pages: Vec<String>,
+    pub stale_blocks: Vec<String>,
+}
+
+impl From<GraphChanges> for FfiGraphChanges {
+    fn from(changes: GraphChanges) -> Self {
+        let strings = |ids: Vec<Id>| ids.into_iter().map(|id| id.to_string()).collect();
+        Self {
+            cursor: changes.cursor.into(),
+            reload_all: changes.reload_all,
+            pages: strings(changes.pages),
+            restructured_pages: strings(changes.restructured_pages),
+            stale_blocks: strings(changes.stale_blocks),
+        }
+    }
+}
+
 impl From<ChangeFeed> for FfiChangeFeed {
     fn from(feed: ChangeFeed) -> Self {
         Self {
@@ -1373,6 +1420,26 @@ impl PithGraph {
     pub fn changes_since(&self, after_seq: i64, limit: u32) -> Result<FfiChangeFeed, FfiError> {
         let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
         Ok(store.changes_since(after_seq, limit as usize)?.into())
+    }
+
+    pub fn change_cursor(&self) -> Result<FfiChangeCursor, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.change_cursor()?.into())
+    }
+
+    pub fn changes_after(&self, cursor: FfiChangeCursor) -> Result<FfiGraphChanges, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store.changes_after(cursor.into())?.into())
+    }
+
+    pub fn block_rows(&self, block_ids: Vec<String>) -> Result<Vec<FfiFlatBlockRow>, FfiError> {
+        let ids = parse_ids(&block_ids)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .block_rows(&ids)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 }
 

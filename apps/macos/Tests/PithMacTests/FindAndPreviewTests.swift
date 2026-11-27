@@ -40,12 +40,12 @@ final class FindAndPreviewTests: XCTestCase {
             ],
             meta: RowFixture.meta
         )
-        controller.reload()
+        controller.applyChanges()
         XCTAssertEqual(controller.rows.map(\.renderedContent), ["parent"])
 
         controller.perform(.findInPage)
         controller.updateFindQuery("needle")
-        XCTAssertEqual(controller.findMatches.map(\.blockId), [child])
+        XCTAssertEqual(controller.find.matches.map(\.blockId), [child])
         XCTAssertEqual(controller.rows.map(\.renderedContent), ["parent", "hidden needle"])
     }
 

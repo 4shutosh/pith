@@ -9,6 +9,11 @@ public enum NavTarget: Equatable {
     case shortcuts
     case settings
     case journals
+
+    var pageId: String? {
+        if case let .page(id, _) = self { return id }
+        return nil
+    }
 }
 
 public enum ListScreen: Equatable {
@@ -27,18 +32,11 @@ public enum SidebarDestination: Equatable {
 
 @MainActor
 public final class OutlinerController: ObservableObject {
-    @Published public var pages: [FfiPage] = []
-    @Published public var pageSummaries: [FfiPageSummary] = []
+    @Published public private(set) var library = PageLibrary()
     @Published public var journals: [FfiPage] = []
     @Published public private(set) var renameRequest: UInt64 = 0
     @Published public var pendingPageDelete: FfiPage?
     @Published public var pendingPageRestore: (id: String, title: String)?
-    @Published public var isFindOpen: Bool = false
-    @Published public var findQuery: String = ""
-    @Published public var findMatches: [FfiPageMatch] = []
-    @Published public var activeFindIndex: Int = 0
-    @Published public var scrollTargetBlockId: String?
-    @Published public var scrollTargetSeq: UInt64 = 0
     @Published public var unlinkedRefs: [FfiUnlinkedRef] = []
     @Published public private(set) var unlinkedRefsLoaded: Bool = false
     @Published public private(set) var isJournalStream: Bool = false
@@ -46,18 +44,18 @@ public final class OutlinerController: ObservableObject {
     @Published public private(set) var hasOlderJournals: Bool = false
     public var journalStreamDays: Int = 7
     public static let journalStreamStep = 7
+    static let libraryPatchLimit = 200
     @Published public var selectedPageId: String?
     @Published public var pendingJournalTitle: String?
     @Published public var rows: [FfiFlatBlockRow] = []
     @Published public var totalVisible: UInt64 = 0
+    @Published public private(set) var earlierRowsAnchor: EarlierRowsAnchor?
     @Published public var backlinks: [FfiBacklink] = []
     @Published public var focusedBlockId: String?
     @Published public var selectedBlockIds: Set<String> = []
     public var draftText: String = ""
     @Published public var requestedCursorOffset: Int?
     @Published public var cursorRequestSeq: UInt64 = 0
-    @Published public var searchQuery: String = ""
-    @Published public var searchHits: [FfiSearchHit] = []
     @Published public private(set) var listScreen: ListScreen?
     @Published public var zoomedBlockId: String?
     @Published public var breadcrumb: [FfiCrumb] = []
@@ -67,8 +65,12 @@ public final class OutlinerController: ObservableObject {
     @Published public var canGoForward: Bool = false
 
     public let graph: PithGraph
+    public let worker: GraphWorker
+    public let background: GraphWorker
     public let shortcuts: ShortcutStore
-    @Published public var paletteScope: PaletteScope = .everything
+    public let search = PaletteSearch()
+    public let find = FindState()
+    public let directory = PageDirectoryModel()
     public let actor: String
     public let todayTitle: String
     public var debounceNanoseconds: UInt64 = 300_000_000
@@ -84,6 +86,32 @@ public final class OutlinerController: ObservableObject {
     private var isRestoringHistory: Bool = false
     private var undoGroup: String = newId()
     private var lastDataVersion: Int64 = 0
+    private var changeCursor: FfiChangeCursor
+    private var completionTicket: UInt64 = 0
+    private lazy var summariesFlight: SingleFlight<Void> = SingleFlight { [weak self] _ in
+        guard let self else { return }
+        do {
+            directory.show(try await background.run { try $0.listPageSummaries() })
+        } catch {
+            report(error)
+        }
+    }
+    private lazy var searchFlight: SingleFlight<String> = SingleFlight { [weak self] query in
+        guard let self else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let hits = trimmed.isEmpty ? [] : try await worker.run { try $0.search(query: trimmed, limit: 100) }
+            if !searchFlight.hasPending {
+                search.show(query, hits: hits)
+            }
+        } catch {
+            report(error)
+        }
+    }
+    private lazy var completionFlight: SingleFlight<BlockCompletionJob> = SingleFlight { [weak self] job in
+        guard let self else { return }
+        await completeBlockReference(job)
+    }
     private var lastEditedBlockId: String?
     private var isComposingIME: Bool = false
     private var isEditingRef: Bool = false
@@ -91,19 +119,28 @@ public final class OutlinerController: ObservableObject {
     private var windowOffset: UInt64 = 0
     private let signposter = OSSignposter(subsystem: "app.pith", category: "editor")
 
-    public init(graph: PithGraph, actor: String = "me", shortcuts: ShortcutStore? = nil) throws {
+    public init(
+        graph: PithGraph,
+        actor: String = "me",
+        shortcuts: ShortcutStore? = nil,
+        worker: GraphWorker? = nil,
+        background: GraphWorker? = nil
+    ) throws {
         self.graph = graph
+        self.worker = worker ?? GraphWorker(graph: graph)
+        self.background = background ?? GraphWorker(graph: graph, qos: .utility)
         self.shortcuts = shortcuts ?? ShortcutStore.shared
         self.actor = actor
         self.todayTitle = try journalTitle(date: nil)
         self.lastDataVersion = try graph.dataVersion()
+        self.changeCursor = try graph.changeCursor()
         self.isJournalStream = true
         try showTodayJournal()
     }
 
     public var currentPage: FfiPage? {
         guard let id = selectedPageId else { return nil }
-        return pages.first(where: { $0.id == id })
+        return library[id]
     }
 
     public var pageTitle: String? {
@@ -128,13 +165,23 @@ public final class OutlinerController: ObservableObject {
     }
 
     public var favoritePages: [FfiPage] {
-        pages
-            .filter(\.favorite)
-            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        library.favorites
     }
 
     public var hasMoreRows: Bool {
-        !isJournalStream && UInt64(rows.count) < totalVisible
+        !isJournalStream && windowOffset + UInt64(rows.count) < totalVisible
+    }
+
+    public var rowsAbove: UInt64 {
+        hasEarlierRows ? windowOffset : 0
+    }
+
+    public var rowsBelow: UInt64 {
+        hasMoreRows ? totalVisible - windowOffset - UInt64(rows.count) : 0
+    }
+
+    public var hasEarlierRows: Bool {
+        !isJournalStream && zoomedBlockId == nil && windowOffset > 0
     }
 
     public var isShowingAllPages: Bool {
@@ -142,7 +189,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     public var recentPages: [FfiPage] {
-        Self.recent(pages.filter { $0.journalDay == nil && !$0.favorite }, limit: 8)
+        library.recents
     }
 
     public var sidebarDestination: SidebarDestination? {
@@ -162,55 +209,33 @@ public final class OutlinerController: ObservableObject {
         return isShowingJournal ? .journals : nil
     }
 
-
-    public static func recent(_ pages: [FfiPage], limit: Int) -> [FfiPage] {
-        Array(
-            pages
-                .sorted { ($0.updatedAt, $0.title) > ($1.updatedAt, $1.title) }
-                .prefix(limit)
-        )
+    private func loadEverything() {
+        do {
+            let fresh = try graph.changeCursor()
+            try reloadPageLists()
+            changeCursor = fresh
+        } catch {
+            report(error)
+        }
+        loadView()
     }
 
-    public func reload() {
+    private func loadView() {
         do {
-            pages = try graph.listPages()
-            journals = try graph.listJournals(limit: UInt32(max(30, journalStreamDays + 2)))
-            if listScreen == .allPages {
-                pageSummaries = try graph.listPageSummaries()
+            let changes = try graph.changesAfter(cursor: changeCursor)
+            changeCursor = changes.cursor
+            if changes.reloadAll {
+                try reloadPageLists()
+            } else if !changes.pages.isEmpty {
+                try refreshLibrary(changes.pages)
+                try reloadJournals()
+                forgetDeletedPages(changes.pages)
             }
-            if isJournalStream && zoomedBlockId == nil {
-                try loadJournalStream()
-                reconcileFocusAndSelection()
-                errorMessage = nil
-                return
-            }
-            journalSections = []
-            hasOlderJournals = false
-            guard let pageId = selectedPageId else {
-                rows = []
-                totalVisible = 0
-                backlinks = []
-                endEditing()
-                errorMessage = nil
-                return
-            }
-            let window: FfiPageWindow
-            let limit = max(pageWindowLimit, UInt64(rows.count))
-            if let zoomed = zoomedBlockId {
-                window = try graph.readBlockWindow(blockId: zoomed, offset: 0, limit: limit)
-                breadcrumb = try graph.blockBreadcrumb(blockId: zoomed)
-            } else {
-                window = try graph.readPageWindow(pageId: pageId, offset: windowOffset, limit: limit)
-                breadcrumb = []
-            }
-            rows = window.rows
-            totalVisible = window.totalVisible
-            backlinks = try graph.backlinks(targetId: pageId)
-            if unlinkedRefsLoaded {
-                unlinkedRefs = try graph.unlinkedReferences(pageId: pageId, limit: 50)
-            }
+            try resolvePendingJournal()
+            try loadVisible()
+            try refreshPageExtras(unlinked: true)
             reconcileFocusAndSelection()
-            if isFindOpen {
+            if find.isOpen {
                 refreshFindMatches(jumpToActive: false)
             }
             errorMessage = nil
@@ -219,10 +244,198 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
+    public func applyChanges() {
+        do {
+            let changes = try graph.changesAfter(cursor: changeCursor)
+            let plan = RefreshPlan.make(changes, visiblePages: visiblePageIds, loadedRows: Set(rows.map(\.id)))
+            changeCursor = changes.cursor
+            guard !plan.isEmpty else { return }
+            if plan.reloadAll {
+                try reloadPageLists()
+                forgetDeletedPages(Array(Set(backStack.compactMap(\.pageId) + forwardStack.compactMap(\.pageId))))
+                if try leaveDeletedViewIfNeeded() {
+                    return
+                }
+                loadView()
+                adoptExternalEditOfFocusedBlock()
+                return
+            }
+            var reloadVisible = plan.reloadVisible
+            if plan.reloadPageLists {
+                let streamDays = journals.map(\.id)
+                try refreshLibrary(changes.pages)
+                try reloadJournals()
+                forgetDeletedPages(changes.pages)
+                if try leaveDeletedViewIfNeeded() {
+                    return
+                }
+                if try resolvePendingJournal() || (isJournalStream && journals.map(\.id) != streamDays) {
+                    reloadVisible = true
+                }
+            }
+            if reloadVisible {
+                try loadVisible()
+            } else if !plan.patchRows.isEmpty {
+                try patchRows(plan.patchRows)
+            }
+            try refreshPageExtras(unlinked: plan.touchesOtherPages)
+            if listScreen == .allPages {
+                refreshPageSummaries()
+            }
+            reconcileFocusAndSelection()
+            if find.isOpen && (reloadVisible || plan.changesVisibleRows) {
+                refreshFindMatches(jumpToActive: false)
+            }
+            adoptExternalEditOfFocusedBlock()
+            errorMessage = nil
+        } catch {
+            report(error)
+        }
+    }
+
+    private var visiblePageIds: Set<String> {
+        var ids = Set(rows.map(\.pageId))
+        if let selectedPageId {
+            ids.insert(selectedPageId)
+        }
+        ids.formUnion(journalSections.compactMap(\.pageId))
+        return ids
+    }
+
+    private func reloadPageLists() throws {
+        update(\.library, to: PageLibrary(try graph.listPages()))
+        try reloadJournals()
+        refreshPageSummaries()
+    }
+
+    private func reloadJournals() throws {
+        update(\.journals, to: try graph.listJournals(limit: UInt32(max(30, journalStreamDays + 2))))
+    }
+
+    private func refreshLibrary(_ changed: [String]) throws {
+        guard changed.count <= Self.libraryPatchLimit else {
+            update(\.library, to: PageLibrary(try graph.listPages()))
+            return
+        }
+        var upserts: [FfiPage] = []
+        var removals: [String] = []
+        for id in changed {
+            if let page = try graph.getPage(id: id) {
+                upserts.append(page)
+            } else {
+                removals.append(id)
+            }
+        }
+        var next = library
+        next.apply(upserts: upserts, removals: removals)
+        update(\.library, to: next)
+    }
+
+    @discardableResult
+    private func resolvePendingJournal() throws -> Bool {
+        guard selectedPageId == nil, let pending = pendingJournalTitle,
+              let journal = try graph.journalPage(date: pending) else { return false }
+        selectedPageId = journal.id
+        pendingJournalTitle = nil
+        return true
+    }
+
+    private func forgetDeletedPages(_ changed: [String]) {
+        let gone = Set(changed.filter { library[$0] == nil })
+        guard !gone.isEmpty else { return }
+        let points = { (target: NavTarget) -> Bool in
+            if case let .page(id, _) = target { return gone.contains(id) }
+            return false
+        }
+        backStack.removeAll(where: points)
+        forwardStack.removeAll(where: points)
+        syncHistoryFlags()
+    }
+
+    private func leaveDeletedViewIfNeeded() throws -> Bool {
+        guard listScreen == nil, let id = selectedPageId, library[id] == nil else {
+            return false
+        }
+        clearSelection()
+        endEditing()
+        if isJournalStream && zoomedBlockId == nil {
+            selectedPageId = nil
+            pendingJournalTitle = todayTitle
+            try loadVisible()
+            return true
+        }
+        if let previous = backStack.popLast() {
+            syncHistoryFlags()
+            navigate(to: previous)
+        } else {
+            isRestoringHistory = true
+            openTodayJournal()
+            isRestoringHistory = false
+        }
+        return true
+    }
+
+    private func loadVisible() throws {
+        if isJournalStream && zoomedBlockId == nil {
+            try loadJournalStream()
+            return
+        }
+        update(\.journalSections, to: [])
+        update(\.hasOlderJournals, to: false)
+        guard let pageId = selectedPageId else {
+            update(\.rows, to: [])
+            update(\.totalVisible, to: 0)
+            endEditing()
+            return
+        }
+        if let zoomed = zoomedBlockId, try graph.blockRow(blockId: zoomed) == nil {
+            zoomedBlockId = nil
+        }
+        let window: FfiPageWindow
+        let limit = max(pageWindowLimit, UInt64(rows.count))
+        if let zoomed = zoomedBlockId {
+            window = try graph.readBlockWindow(blockId: zoomed, offset: 0, limit: limit)
+            update(\.breadcrumb, to: try graph.blockBreadcrumb(blockId: zoomed))
+        } else {
+            window = try graph.readPageWindow(pageId: pageId, offset: windowOffset, limit: limit)
+            update(\.breadcrumb, to: [])
+        }
+        update(\.rows, to: window.rows)
+        update(\.totalVisible, to: window.totalVisible)
+    }
+
+    private func patchRows(_ ids: [String]) throws {
+        var next = rows
+        let fresh = try graph.blockRows(blockIds: ids)
+        for row in fresh {
+            if let index = next.firstIndex(where: { $0.id == row.id }) {
+                next[index] = row
+            }
+        }
+        update(\.rows, to: next)
+    }
+
+    private func refreshPageExtras(unlinked: Bool) throws {
+        guard listScreen == nil, !isJournalStream || zoomedBlockId != nil, let pageId = selectedPageId else {
+            update(\.backlinks, to: [])
+            return
+        }
+        update(\.backlinks, to: try graph.backlinks(targetId: pageId))
+        if unlinked && unlinkedRefsLoaded {
+            update(\.unlinkedRefs, to: try graph.unlinkedReferences(pageId: pageId, limit: 50))
+        }
+    }
+
+    private func update<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<OutlinerController, Value>, to value: Value) {
+        if self[keyPath: keyPath] != value {
+            self[keyPath: keyPath] = value
+        }
+    }
+
     public func loadOlderJournals() {
         guard isJournalStream, hasOlderJournals else { return }
         journalStreamDays += Self.journalStreamStep
-        reload()
+        loadView()
     }
 
     private func loadJournalStream() throws {
@@ -241,12 +454,11 @@ public final class OutlinerController: ObservableObject {
             all.append(contentsOf: window.rows)
             sections.append(JournalSection(pageId: journal.id, title: journal.title, rowRange: start..<all.count))
         }
-        rows = all
-        totalVisible = UInt64(all.count)
-        journalSections = sections
-        hasOlderJournals = past.count > journalStreamDays
-        backlinks = []
-        breadcrumb = []
+        update(\.rows, to: all)
+        update(\.totalVisible, to: UInt64(all.count))
+        update(\.journalSections, to: sections)
+        update(\.hasOlderJournals, to: past.count > journalStreamDays)
+        update(\.breadcrumb, to: [])
     }
 
     private func reconcileFocusAndSelection() {
@@ -280,6 +492,24 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
+    public func loadEarlierRows() {
+        guard hasEarlierRows, let pageId = selectedPageId else { return }
+        let interval = signposter.beginInterval("loadEarlier")
+        defer { signposter.endInterval("loadEarlier", interval) }
+        run {
+            let start = windowOffset > pageWindowLimit ? windowOffset - pageWindowLimit : 0
+            let window = try graph.readPageWindow(pageId: pageId, offset: start, limit: windowOffset - start)
+            let existing = Set(rows.map(\.id))
+            let anchor = rows.first?.id
+            windowOffset = start
+            update(\.rows, to: window.rows.filter { !existing.contains($0.id) } + rows)
+            update(\.totalVisible, to: window.totalVisible)
+            if let anchor {
+                earlierRowsAnchor = EarlierRowsAnchor(blockId: anchor, seq: (earlierRowsAnchor?.seq ?? 0) &+ 1)
+            }
+        }
+    }
+
     public func selectPage(_ pageId: String) {
         pushHistoryIfNeeded(for: .page(id: pageId, zoomedBlockId: nil))
         clearSelection()
@@ -294,7 +524,7 @@ public final class OutlinerController: ObservableObject {
         unlinkedRefsLoaded = false
         closeFind()
         rows = []
-        reload()
+        loadView()
     }
 
     public func openTodayJournal() {
@@ -332,7 +562,7 @@ public final class OutlinerController: ObservableObject {
                 selectedPageId = nil
                 pendingJournalTitle = try journalTitle(date: date)
             }
-            reload()
+            loadView()
         } catch {
             report(error)
         }
@@ -353,11 +583,12 @@ public final class OutlinerController: ObservableObject {
         closeFind()
         isJournalStream = false
         listScreen = .allPages
-        run {
-            pages = try graph.listPages()
-            journals = try graph.listJournals(limit: 30)
-            pageSummaries = try graph.listPageSummaries()
-        }
+        refreshPageSummaries()
+    }
+
+    @discardableResult
+    public func refreshPageSummaries() -> Task<Void, Never> {
+        summariesFlight.submit(())
     }
 
     public func showShortcuts() {
@@ -386,7 +617,7 @@ public final class OutlinerController: ObservableObject {
     public func renamePage(_ pageId: String, to newTitle: String) {
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              let page = pages.first(where: { $0.id == pageId }),
+              let page = library[pageId],
               page.journalDay == nil,
               trimmed != page.title else { return }
         if selectedPageId == pageId {
@@ -397,14 +628,13 @@ public final class OutlinerController: ObservableObject {
                 ops: [.renamePage(id: page.id, title: trimmed, expectedVersion: page.version)],
                 meta: meta("rename page")
             )
-            reload()
+            applyChanges()
         }
     }
 
     public func deletePage(_ pageId: String) {
-        guard let page = pages.first(where: { $0.id == pageId }) else { return }
-        let wasCurrent = selectedPageId == page.id
-        if wasCurrent {
+        guard let page = library[pageId] else { return }
+        if selectedPageId == page.id {
             clearSelection()
             leaveBlock()
         }
@@ -413,20 +643,7 @@ public final class OutlinerController: ObservableObject {
                 ops: [.deletePage(id: page.id, expectedVersion: page.version)],
                 meta: meta("delete page")
             )
-            backStack.removeAll { if case let .page(id, _) = $0 { return id == page.id } else { return false } }
-            forwardStack.removeAll { if case let .page(id, _) = $0 { return id == page.id } else { return false } }
-            syncHistoryFlags()
-            if wasCurrent {
-                if canGoBack {
-                    goBack()
-                } else {
-                    isRestoringHistory = true
-                    openTodayJournal()
-                    isRestoringHistory = false
-                }
-            } else {
-                reload()
-            }
+            applyChanges()
         }
     }
 
@@ -499,7 +716,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func requestDelete(_ pageId: String) {
-        pendingPageDelete = pages.first { $0.id == pageId && $0.journalDay == nil }
+        pendingPageDelete = library[pageId].flatMap { $0.journalDay == nil ? $0 : nil }
     }
 
     public func confirmPendingDelete() {
@@ -530,7 +747,7 @@ public final class OutlinerController: ObservableObject {
             if loc.visibleIndex >= windowOffset + pageWindowLimit {
                 windowOffset = loc.visibleIndex - pageWindowLimit / 2
             }
-            reload()
+            loadView()
             focusBlock(blockId)
         }
     }
@@ -557,68 +774,47 @@ public final class OutlinerController: ObservableObject {
                     meta: meta(collapsed ? "collapse all" : "expand all")
                 )
             }
-            reload()
+            applyChanges()
         }
-    }
-
-    public var activeFindMatch: FfiPageMatch? {
-        guard isFindOpen, findMatches.indices.contains(activeFindIndex) else { return nil }
-        return findMatches[activeFindIndex]
-    }
-
-    public func findMatches(in blockId: String) -> [FfiPageMatch] {
-        guard isFindOpen else { return [] }
-        return findMatches.filter { $0.blockId == blockId }
-    }
-
-    public func activeFindOrdinal(in blockId: String) -> Int? {
-        guard let active = activeFindMatch, active.blockId == blockId else { return nil }
-        var ordinal = 0
-        for (idx, match) in findMatches.enumerated() where match.blockId == blockId {
-            if idx == activeFindIndex {
-                return ordinal
-            }
-            ordinal += 1
-        }
-        return nil
     }
 
     public func openFind() {
         guard listScreen == nil else { return }
-        isFindOpen = true
+        find.isOpen = true
         refreshFindMatches(jumpToActive: false)
     }
 
     public func closeFind() {
-        isFindOpen = false
-        findQuery = ""
-        findMatches = []
-        activeFindIndex = 0
+        guard find.isOpen || !find.query.isEmpty || !find.matches.isEmpty || find.activeIndex != 0 else { return }
+        find.isOpen = false
+        find.query = ""
+        find.matches = []
+        find.activeIndex = 0
     }
 
     public func updateFindQuery(_ query: String) {
-        findQuery = query
-        activeFindIndex = 0
+        find.query = query
+        find.activeIndex = 0
         refreshFindMatches(jumpToActive: true)
     }
 
     public func nextFindMatch() {
-        guard !findMatches.isEmpty else { return }
-        activeFindIndex = (activeFindIndex + 1) % findMatches.count
+        guard !find.matches.isEmpty else { return }
+        find.activeIndex = (find.activeIndex + 1) % find.matches.count
         scrollToActiveFindMatch()
     }
 
     public func previousFindMatch() {
-        guard !findMatches.isEmpty else { return }
-        activeFindIndex = (activeFindIndex - 1 + findMatches.count) % findMatches.count
+        guard !find.matches.isEmpty else { return }
+        find.activeIndex = (find.activeIndex - 1 + find.matches.count) % find.matches.count
         scrollToActiveFindMatch()
     }
 
     private func refreshFindMatches(jumpToActive: Bool) {
-        let trimmed = findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = find.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            findMatches = []
-            activeFindIndex = 0
+            find.matches = []
+            find.activeIndex = 0
             return
         }
         run {
@@ -632,9 +828,11 @@ public final class OutlinerController: ObservableObject {
             } else if let pageId = selectedPageId {
                 found = try graph.findInPage(pageId: pageId, rootBlockId: zoomedBlockId, query: trimmed)
             }
-            findMatches = found
-            if activeFindIndex >= found.count {
-                activeFindIndex = 0
+            if find.matches != found {
+                find.matches = found
+            }
+            if find.activeIndex >= found.count {
+                find.activeIndex = 0
             }
             if jumpToActive {
                 scrollToActiveFindMatch()
@@ -643,18 +841,17 @@ public final class OutlinerController: ObservableObject {
     }
 
     private func scrollToActiveFindMatch() {
-        guard let match = activeFindMatch else { return }
+        guard let match = find.activeMatch else { return }
         if !rows.contains(where: { $0.id == match.blockId }) {
             run {
                 let index = try graph.revealBlock(blockId: match.blockId, meta: meta("reveal match"))
                 if !isJournalStream, index >= windowOffset + pageWindowLimit {
                     windowOffset = index - pageWindowLimit / 2
                 }
-                reload()
+                loadView()
             }
         }
-        scrollTargetBlockId = match.blockId
-        scrollTargetSeq &+= 1
+        find.reveal(match.blockId)
     }
 
     public func previewPage(id: String) -> FfiLinkPreview? {
@@ -685,7 +882,7 @@ public final class OutlinerController: ObservableObject {
                 targetPageId: pageId,
                 meta: meta("link unlinked reference")
             )
-            reload()
+            applyChanges()
         }
     }
 
@@ -697,13 +894,13 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func toggleFavorite(_ pageId: String) {
-        guard let page = pages.first(where: { $0.id == pageId }) else { return }
+        guard let page = library[pageId] else { return }
         run {
             _ = try graph.applyOps(
                 ops: [.setPageFavorite(id: page.id, favorite: !page.favorite)],
                 meta: meta(page.favorite ? "unfavorite page" : "favorite page")
             )
-            reload()
+            applyChanges()
         }
     }
 
@@ -773,14 +970,10 @@ public final class OutlinerController: ObservableObject {
                 selectedPageId = nil
                 pendingJournalTitle = todayTitle
             }
-            reload()
+            loadView()
         case .allPages:
             listScreen = .allPages
-            run {
-                pages = try graph.listPages()
-                journals = try graph.listJournals(limit: 30)
-                pageSummaries = try graph.listPageSummaries()
-            }
+            refreshPageSummaries()
         case .shortcuts:
             listScreen = .shortcuts
         case .settings:
@@ -795,13 +988,13 @@ public final class OutlinerController: ObservableObject {
                 selectedPageId = nil
                 pendingJournalTitle = title
             }
-            reload()
+            loadView()
         case let .page(id, zoomed):
             listScreen = nil
             pendingJournalTitle = nil
             selectedPageId = id
             zoomedBlockId = zoomed
-            reload()
+            loadView()
         }
     }
 
@@ -967,7 +1160,7 @@ public final class OutlinerController: ObservableObject {
         run {
             _ = try graph.deleteBlocks(blockIds: ids, meta: meta("delete blocks"))
             clearSelection()
-            reload()
+            applyChanges()
             if let fallbackId, rows.contains(where: { $0.id == fallbackId }) {
                 selectBlock(fallbackId)
             }
@@ -979,7 +1172,7 @@ public final class OutlinerController: ObservableObject {
         guard !ids.isEmpty else { return }
         run {
             if try graph.indentBlocks(blockIds: ids, meta: meta("indent blocks")) != nil {
-                reload()
+                applyChanges()
             }
         }
     }
@@ -989,7 +1182,7 @@ public final class OutlinerController: ObservableObject {
         guard !ids.isEmpty else { return }
         run {
             if try graph.outdentBlocks(blockIds: ids, meta: meta("outdent blocks")) != nil {
-                reload()
+                applyChanges()
             }
         }
     }
@@ -1002,7 +1195,7 @@ public final class OutlinerController: ObservableObject {
                 ? try graph.moveBlocksUp(blockIds: ids, meta: meta("move blocks up"))
                 : try graph.moveBlocksDown(blockIds: ids, meta: meta("move blocks down"))
             if result != nil {
-                reload()
+                applyChanges()
             }
         }
     }
@@ -1012,7 +1205,7 @@ public final class OutlinerController: ObservableObject {
         guard !ids.isEmpty else { return }
         run {
             if try graph.cycleTasks(blockIds: ids, meta: meta("cycle tasks")) != nil {
-                reload()
+                applyChanges()
             }
         }
     }
@@ -1098,15 +1291,11 @@ public final class OutlinerController: ObservableObject {
         defer { signposter.endInterval("save", interval) }
         do {
             let content = BlockPresentation.combine(prefix: editPrefix, body: draftText)
-            let result = try graph.applyOps(
+            _ = try graph.applyOps(
                 ops: [.updateBlock(id: blockId, content: content, expectedVersion: draftBaseVersion)],
                 meta: meta("edit block", group: undoGroup)
             )
-            if result.pagesChanged {
-                reload()
-            } else {
-                try refreshRow(blockId)
-            }
+            applyChanges()
             if let saved = rows.first(where: { $0.id == blockId }) {
                 if editPrefix.isEmpty {
                     draftBaseVersion = saved.version
@@ -1209,7 +1398,7 @@ public final class OutlinerController: ObservableObject {
             if let caretFromEnd {
                 refreshFocused(caretFromEnd: caretFromEnd)
             } else {
-                reload()
+                applyChanges()
             }
         }
     }
@@ -1222,7 +1411,7 @@ public final class OutlinerController: ObservableObject {
                 ops: [.setCollapsed(id: row.id, collapsed: !row.collapsed)],
                 meta: meta("toggle collapse")
             )
-            reload()
+            applyChanges()
         }
     }
 
@@ -1242,15 +1431,20 @@ public final class OutlinerController: ObservableObject {
         }
     }
 
-    public func runSearch(_ query: String) {
-        searchQuery = query
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            searchHits = []
-            return
-        }
-        run { searchHits = try graph.search(query: trimmed, limit: 100) }
+    @discardableResult
+    public func runSearch(_ query: String) -> Task<Void, Never> {
+        searchFlight.submit(query)
     }
+
+    public func searchSettled() async {
+        await searchFlight.settled()
+    }
+
+    public func completionSettled() async {
+        await completionFlight.settled()
+    }
+
+
 
     public func openSearchHit(_ hit: FfiSearchHit) {
         switch hit {
@@ -1263,7 +1457,7 @@ public final class OutlinerController: ObservableObject {
                 if index >= windowOffset + pageWindowLimit {
                     windowOffset = index - pageWindowLimit / 2
                 }
-                reload()
+                loadView()
             }
             guard let row = rows.first(where: { $0.id == blockId }) else { return }
             focusBlock(blockId, cursorOffset: editOffset(fromRendered: Int(cursor), in: row))
@@ -1284,7 +1478,7 @@ public final class OutlinerController: ObservableObject {
         }
         zoomedBlockId = blockId
         rows = []
-        reload()
+        loadView()
     }
 
     public func zoomOut(to crumb: FfiCrumb) {
@@ -1295,7 +1489,7 @@ public final class OutlinerController: ObservableObject {
         leaveBlock()
         zoomedBlockId = crumb.blockId
         rows = []
-        reload()
+        loadView()
     }
 
     public func zoomOutOneLevel() {
@@ -1375,7 +1569,7 @@ public final class OutlinerController: ObservableObject {
             return
         }
         let value = item.value
-        completion = nil
+        clearCompletion()
         isEditingRef = false
         let edit = applyCompletion(text: draftText, context: state.context, value: value)
         draftText = edit.text
@@ -1384,16 +1578,17 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func dismissCompletion() {
-        completion = nil
+        clearCompletion()
     }
 
     private func updateCompletion(context: FfiCompletionContext?) {
         guard let context else {
-            completion = nil
+            clearCompletion()
             return
         }
         let interval = signposter.beginInterval("completion")
         defer { signposter.endInterval("completion", interval) }
+        completionTicket &+= 1
         var items: [CompletionItem] = []
         switch context.kind {
         case .page, .tag:
@@ -1405,25 +1600,42 @@ public final class OutlinerController: ObservableObject {
             }
         case .block:
             guard context.query.count >= 3 else {
-                completion = nil
+                clearCompletion()
                 return
             }
-            let hits = (try? graph.search(query: context.query, limit: 20)) ?? []
-            items = hits.compactMap { hit in
-                guard case let .block(blockId, _, _, breadcrumb, snippet, _, _) = hit, blockId != focusedBlockId else {
-                    return nil
-                }
-                return CompletionItem(
-                    label: snippet.map(\.text).joined(),
-                    detail: SearchPresentation.breadcrumb(breadcrumb),
-                    value: blockId,
-                    isNew: false
-                )
-            }
+            requestBlockCompletion(context)
+            return
         case .slash:
             items = slashCommands(matching: context.query)
         }
         completion = items.isEmpty ? nil : CompletionState(context: context, items: items, selected: 0)
+    }
+
+    private func clearCompletion() {
+        completionTicket &+= 1
+        update(\.completion, to: nil)
+    }
+
+    private func requestBlockCompletion(_ context: FfiCompletionContext) {
+        completionFlight.submit(BlockCompletionJob(context: context, editing: focusedBlockId, ticket: completionTicket))
+    }
+
+    private func completeBlockReference(_ job: BlockCompletionJob) async {
+        let query = job.context.query
+        guard let hits = try? await worker.run({ try $0.search(query: query, limit: 20) }),
+              !completionFlight.hasPending, job.ticket == completionTicket, focusedBlockId == job.editing else { return }
+        let items: [CompletionItem] = hits.compactMap { hit in
+            guard case let .block(blockId, _, _, breadcrumb, snippet, _, _) = hit, blockId != job.editing else {
+                return nil
+            }
+            return CompletionItem(
+                label: snippet.map(\.text).joined(),
+                detail: SearchPresentation.breadcrumb(breadcrumb),
+                value: blockId,
+                isNew: false
+            )
+        }
+        update(\.completion, to: items.isEmpty ? nil : CompletionState(context: job.context, items: items, selected: 0))
     }
 
     private func slashCommands(matching query: String) -> [CompletionItem] {
@@ -1434,7 +1646,7 @@ public final class OutlinerController: ObservableObject {
     private func runSlashCommand(_ command: FfiSlashCommand, context: FfiCompletionContext) {
         guard let blockId = focusedBlockId else { return }
         cancelPendingSave()
-        completion = nil
+        clearCompletion()
         isEditingRef = false
         let caret = TextOffsets.length(editPrefix) + Int(context.end)
         run {
@@ -1455,14 +1667,7 @@ public final class OutlinerController: ObservableObject {
             let currentVersion = try graph.dataVersion()
             guard currentVersion != lastDataVersion else { return }
             lastDataVersion = currentVersion
-            if selectedPageId == nil, let pending = pendingJournalTitle {
-                selectedPageId = try graph.journalPage(date: pending)?.id
-                if selectedPageId != nil {
-                    pendingJournalTitle = nil
-                }
-            }
-            reload()
-            adoptExternalEditOfFocusedBlock()
+            applyChanges()
         } catch {
             report(error)
         }
@@ -1480,7 +1685,7 @@ public final class OutlinerController: ObservableObject {
             selectedPageId = nil
             pendingJournalTitle = try journalTitle(date: nil)
         }
-        reload()
+        loadEverything()
     }
 
     private func beginEditing(_ row: FfiFlatBlockRow) {
@@ -1493,7 +1698,7 @@ public final class OutlinerController: ObservableObject {
 
     private func endEditing() {
         cancelPendingSave()
-        completion = nil
+        clearCompletion()
         focusedBlockId = nil
         draftText = ""
     }
@@ -1518,7 +1723,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     private func apply(_ outcome: FfiEditOutcome) {
-        reload()
+        applyChanges()
         guard let row = rows.first(where: { $0.id == outcome.focusBlockId }) else { return }
         let cursor = outcome.cursor.map { editOffset(fromRendered: Int($0), in: row) }
         if focusedBlockId == row.id {
@@ -1532,7 +1737,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     private func afterHistoryStep() {
-        reload()
+        applyChanges()
         if let focused = focusedBlockId, let row = rows.first(where: { $0.id == focused }) {
             beginEditing(row)
             requestCursor(TextOffsets.length(draftText))
@@ -1549,17 +1754,8 @@ public final class OutlinerController: ObservableObject {
         requestCursor(TextOffsets.length(draftText))
     }
 
-    private func refreshRow(_ blockId: String) throws {
-        guard let index = rows.firstIndex(where: { $0.id == blockId }) else { return }
-        if let row = try graph.blockRow(blockId: blockId) {
-            rows[index] = row
-        } else {
-            reload()
-        }
-    }
-
     private func refreshFocused(caretFromEnd: Int) {
-        reload()
+        applyChanges()
         guard let blockId = focusedBlockId, let row = rows.first(where: { $0.id == blockId }) else { return }
         rebase(on: row)
         draftText = draftBaseText

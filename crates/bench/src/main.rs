@@ -12,6 +12,7 @@ const ITERATIONS: usize = 50;
 const CAPTURE_BUDGET_MS: f64 = 16.0;
 const SEARCH_BUDGET_MS: f64 = 30.0;
 const BACKLINKS_BUDGET_MS: f64 = 10.0;
+const SUMMARIES_BUDGET_MS: f64 = 50.0;
 
 const TOPICS: &[&str] = &[
     "architecture",
@@ -116,6 +117,12 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
         })?
     };
 
+    let summaries = measure_stats(ITERATIONS, || -> Result<()> {
+        let all = store.list_page_summaries()?;
+        assert!(all.len() >= PAGE_COUNT);
+        Ok(())
+    })?;
+
     let api_show = {
         let api = Api::new(&mut store);
         measure_stats(ITERATIONS, || -> Result<()> {
@@ -150,6 +157,10 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
         "  api.show (100 blocks) : p50={:>6.2} ms  p95={:>6.2} ms",
         api_show.median_ms, api_show.p95_ms
     );
+    println!(
+        "  page summaries (all)  : p50={:>6.2} ms  p95={:>6.2} ms  (budget < {SUMMARIES_BUDGET_MS:.0} ms)",
+        summaries.median_ms, summaries.p95_ms
+    );
 
     if check_budgets {
         if capture.p95_ms >= CAPTURE_BUDGET_MS {
@@ -174,6 +185,12 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
             bail!(
                 "short search p95 exceeded budget: {:.2} ms >= {SEARCH_BUDGET_MS:.0} ms",
                 short_search.p95_ms
+            );
+        }
+        if summaries.p95_ms >= SUMMARIES_BUDGET_MS {
+            bail!(
+                "page summaries p95 exceeded budget: {:.2} ms >= {SUMMARIES_BUDGET_MS:.0} ms",
+                summaries.p95_ms
             );
         }
         if api_search.p95_ms >= SEARCH_BUDGET_MS {

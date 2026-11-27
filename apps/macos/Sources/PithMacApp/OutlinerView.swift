@@ -5,6 +5,7 @@ import SwiftUI
 
 struct OutlinerView: View {
     @ObservedObject var controller: OutlinerController
+    @ObservedObject var find: FindState
     @ObservedObject private var settings = AppSettings.shared
     let contentLeading: CGFloat
     let contentWidth: CGFloat
@@ -21,7 +22,7 @@ struct OutlinerView: View {
                             content
                                 .frame(width: contentWidth, alignment: .leading)
                                 .padding(.leading, contentLeading)
-                                .padding(.top, 58)
+                                .padding(.top, 32)
                                 .padding(.bottom, 140)
                             Spacer(minLength: 0)
                         }
@@ -31,25 +32,30 @@ struct OutlinerView: View {
                             proxy.scrollTo(id)
                         }
                     }
-                    .onChange(of: controller.scrollTargetSeq) { _ in
-                        if let id = controller.scrollTargetBlockId {
+                    .onChange(of: controller.earlierRowsAnchor) { anchor in
+                        if let anchor {
+                            proxy.scrollTo(anchor.blockId, anchor: .top)
+                        }
+                    }
+                    .onChange(of: find.revealRequest) { request in
+                        if let request {
                             withAnimation(Motion.fast) {
-                                proxy.scrollTo(id, anchor: .center)
+                                proxy.scrollTo(request.blockId, anchor: .center)
                             }
                         }
                     }
                 }
             }
 
-            if controller.isFindOpen {
-                FindBar(controller: controller)
-                    .padding(.top, 44)
+            if find.isOpen {
+                FindBar(controller: controller, find: find)
+                    .padding(.top, 12)
                     .padding(.trailing, 24)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .zIndex(5)
             }
         }
-        .animation(Motion.fast, value: controller.isFindOpen)
+        .animation(Motion.fast, value: find.isOpen)
         .keyScope(.screen) { handleKey($0) }
         .environment(\.openURL, OpenURLAction { url in
             if let pageId = InlineFormatter.pageId(from: url) {
@@ -158,6 +164,19 @@ struct OutlinerView: View {
                 startWriting
             } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    if controller.hasEarlierRows {
+                        Button {
+                            controller.loadEarlierRows()
+                        } label: {
+                            Text("Load earlier (\(controller.rowsAbove) above)")
+                                .font(Typography.ui(12, .medium))
+                                .foregroundColor(Theme.textTertiary)
+                                .padding(.vertical, 12)
+                                .padding(.leading, 40)
+                        }
+                        .buttonStyle(.plain)
+                        .onAppear { controller.loadEarlierRows() }
+                    }
                     ForEach(controller.rows, id: \.id) { row in
                         outlineRow(row)
                     }
@@ -165,8 +184,7 @@ struct OutlinerView: View {
                         Button {
                             controller.loadMoreRows()
                         } label: {
-                            let remaining = controller.totalVisible - UInt64(controller.rows.count)
-                            Text("Load more (\(remaining) remaining)")
+                            Text("Load more (\(controller.rowsBelow) remaining)")
                                 .font(Typography.ui(12, .medium))
                                 .foregroundColor(Theme.textTertiary)
                                 .padding(.vertical, 12)
@@ -254,8 +272,11 @@ struct OutlinerView: View {
             cursorOffset: isFocused ? controller.requestedCursorOffset : nil,
             cursorSeq: isFocused ? controller.cursorRequestSeq : 0,
             completion: isFocused ? controller.completion : nil,
+            findMatches: find.matches(in: row.id),
+            activeFindOrdinal: find.activeOrdinal(in: row.id),
             controller: controller
         )
+        .equatable()
         .padding(.leading, -OutlineRow.disclosureWidth)
         .id(row.id)
     }
@@ -308,14 +329,28 @@ struct OutlinerView: View {
     }
 }
 
-private struct OutlineRow: View {
+private struct OutlineRow: View, Equatable {
     let row: FfiFlatBlockRow
     let isFocused: Bool
     let isSelected: Bool
     let cursorOffset: Int?
     let cursorSeq: UInt64
     let completion: CompletionState?
+    let findMatches: [FfiPageMatch]
+    let activeFindOrdinal: Int?
     let controller: OutlinerController
+
+    static func == (lhs: OutlineRow, rhs: OutlineRow) -> Bool {
+        lhs.row == rhs.row
+            && lhs.isFocused == rhs.isFocused
+            && lhs.isSelected == rhs.isSelected
+            && lhs.cursorOffset == rhs.cursorOffset
+            && lhs.cursorSeq == rhs.cursorSeq
+            && lhs.completion == rhs.completion
+            && lhs.findMatches == rhs.findMatches
+            && lhs.activeFindOrdinal == rhs.activeFindOrdinal
+            && lhs.controller === rhs.controller
+    }
     @ObservedObject private var settings = AppSettings.shared
     @State private var isHovered = false
 
@@ -329,8 +364,6 @@ private struct OutlineRow: View {
 
     var body: some View {
         let presentation = BlockPresentation.runs(row.display, showLinkBrackets: settings.showLinkBrackets)
-        let rowFindMatches = controller.findMatches(in: row.id)
-        let activeFindOrdinal = controller.activeFindOrdinal(in: row.id)
 
         HStack(alignment: .top, spacing: 0) {
             disclosure
@@ -339,7 +372,7 @@ private struct OutlineRow: View {
                 .frame(width: Self.markerWidth, height: markerHeight)
             blockBody(
                 presentation: presentation,
-                findMatches: rowFindMatches,
+                findMatches: findMatches,
                 activeFindOrdinal: activeFindOrdinal
             )
             .padding(.leading, Self.textGap)

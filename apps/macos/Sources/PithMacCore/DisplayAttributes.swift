@@ -11,6 +11,7 @@ public extension NSAttributedString.Key {
 public enum BlockStyle {
     public static let fontSize: CGFloat = 15
     public static let lineHeight: CGFloat = 24
+    public static let fallbackWidth: CGFloat = EditorLayout.maximumContentWidth
 
     public static let paragraph: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()

@@ -27,3 +27,9 @@ public struct CompletionState: Equatable {
         self.selected = selected
     }
 }
+
+struct BlockCompletionJob {
+    let context: FfiCompletionContext
+    let editing: String?
+    let ticket: UInt64
+}

@@ -36,12 +36,22 @@ struct ShortcutsView: View {
     @FocusState private var filterFocused: Bool
     @Namespace private var tabNamespace
 
-    private static let essentials: [(action: AppAction, hint: String)] = [
-        (.openPalette, "Jump to any page or command"),
-        (.findInPage, "Search across all blocks"),
-        (.openJournals, "Return to today's notes"),
-        (.openAllPages, "Browse & filter your graph"),
+    private struct Essential: Identifiable {
+        let action: AppAction
+        let hint: String
+        var id: String { action.rawValue }
+    }
+
+    private static let essentials: [Essential] = [
+        Essential(action: .openPalette, hint: "Jump to any page or command"),
+        Essential(action: .findInPage, hint: "Search across all blocks"),
+        Essential(action: .openJournals, hint: "Return to today's notes"),
+        Essential(action: .openAllPages, hint: "Browse & filter your graph"),
     ]
+
+    private func fitsTwoColumns(minimum: CGFloat) -> Bool {
+        AdaptiveColumns.count(width: contentWidth, minimumColumnWidth: minimum, spacing: 16, maximum: 2) == 2
+    }
 
     private var isFiltering: Bool {
         !filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -74,7 +84,7 @@ struct ShortcutsView: View {
     }
 
     private var useTwoColumnGrid: Bool {
-        selectedTab == .all && !isFiltering && contentWidth >= 680
+        selectedTab == .all && !isFiltering && fitsTwoColumns(minimum: 320)
     }
 
     var body: some View {
@@ -87,7 +97,7 @@ struct ShortcutsView: View {
                         .padding(.bottom, 16)
                     notices
                 }
-                .padding(.top, 58)
+                .padding(.top, 32)
             }
             Rectangle().fill(Theme.divider).frame(height: 1)
 
@@ -196,7 +206,7 @@ struct ShortcutsView: View {
                 }
 
                 if !builtInGroups.isEmpty {
-                    BuiltInKeysSection(groups: builtInGroups, twoColumns: contentWidth >= 680)
+                    BuiltInKeysSection(groups: builtInGroups, width: contentWidth)
                 }
             }
         }
@@ -204,28 +214,16 @@ struct ShortcutsView: View {
 
     private var essentialsStrip: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Essentials")
-                .font(Typography.ui(TypeScale.label, .medium))
-                .tracking(0.3)
-                .foregroundColor(Theme.textTertiary)
-
-            LazyVGrid(
-                columns: [
-                    GridItem(.flexible(), spacing: 12),
-                    GridItem(.flexible(), spacing: 12),
-                ],
-                spacing: 12
-            ) {
-                ForEach(Self.essentials, id: \.action.id) { item in
-                    EssentialCard(
-                        action: item.action,
-                        hint: item.hint,
-                        combo: shortcuts.combo(for: item.action),
-                        isCustomized: shortcuts.isCustomized(item.action),
-                        isRecording: recordingAction == item.action
-                    ) {
-                        startRecording(item.action)
-                    }
+            SectionLabel(title: "Essentials")
+            AdaptiveGrid(items: Self.essentials, width: contentWidth, minimumColumnWidth: 280) { item in
+                EssentialCard(
+                    action: item.action,
+                    hint: item.hint,
+                    combo: shortcuts.combo(for: item.action),
+                    isCustomized: shortcuts.isCustomized(item.action),
+                    isRecording: recordingAction == item.action
+                ) {
+                    startRecording(item.action)
                 }
             }
         }
@@ -257,27 +255,7 @@ struct ShortcutsView: View {
     }
 
     private func categoryCard(category: ShortcutCategory, actions: [AppAction]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text(category.title)
-                    .font(Typography.ui(TypeScale.ui, .semibold))
-                    .foregroundColor(Theme.textStrong)
-                Text("\(actions.count)")
-                    .font(Typography.ui(TypeScale.label, .medium))
-                    .foregroundColor(Theme.textTertiary)
-                    .padding(.horizontal, 6)
-                    .frame(height: 18)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.hover))
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-
-            Rectangle()
-                .fill(Theme.divider)
-                .frame(height: 1)
-
+        Card(title: category.title, count: actions.count) {
             VStack(spacing: 1) {
                 ForEach(actions) { action in
                     ShortcutRow(
@@ -294,9 +272,6 @@ struct ShortcutsView: View {
             }
             .padding(6)
         }
-        .background(Theme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.divider, lineWidth: 1))
     }
 
     private func startRecording(_ action: AppAction) {
@@ -307,47 +282,26 @@ struct ShortcutsView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Keyboard shortcuts")
-                    .font(Typography.ui(TypeScale.pageTitle, .semibold))
-                    .tracking(-0.4)
-                    .foregroundColor(Theme.textStrong)
-
-                HStack(spacing: 6) {
-                    Text("\(AppAction.allCases.count) customizable")
+        ScreenHeader(title: "Keyboard shortcuts") {
+            HStack(spacing: 6) {
+                Text("\(AppAction.allCases.count) customizable")
+                Text("·")
+                Text("\(BuiltInKey.all.count) built-in")
+                if shortcuts.hasAnyCustomizations {
                     Text("·")
-                    Text("\(BuiltInKey.all.count) built-in")
-                    if shortcuts.hasAnyCustomizations {
-                        Text("·")
-                        Text("\(shortcuts.customizedCount) customized")
-                            .foregroundColor(Theme.accent)
-                            .contentTransition(.numericText())
-                    }
+                    Text("\(shortcuts.customizedCount) customized")
+                        .foregroundColor(Theme.accent)
+                        .contentTransition(.numericText())
                 }
-                .font(Typography.ui(TypeScale.ui))
-                .foregroundColor(Theme.textTertiary)
             }
-
-            Spacer(minLength: 0)
-
+        } trailing: {
             if shortcuts.hasAnyCustomizations {
-                Button {
+                SecondaryButton(title: "Reset all") {
                     shortcuts.resetAll()
                     pendingConflict = nil
                     bindingProblem = nil
                     recordingAction = nil
-                } label: {
-                    Text("Reset all")
-                        .font(Typography.ui(TypeScale.meta, .medium))
-                        .foregroundColor(Theme.textSecondary)
-                        .padding(.horizontal, 12)
-                        .frame(height: 28)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.hover))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.divider, lineWidth: 1))
                 }
-                .buttonStyle(PressButtonStyle(scale: 0.97))
-                .cursor(.pointingHand)
                 .transition(.opacity)
             }
         }
@@ -355,61 +309,38 @@ struct ShortcutsView: View {
 
     private var controlsBar: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                SearchIcon(size: 13)
-                    .foregroundColor(Theme.textTertiary)
-                TextField("Search shortcuts, workflows, or keys…", text: $filterText)
-                    .textFieldStyle(.plain)
-                    .font(Typography.ui(TypeScale.ui))
-                    .foregroundColor(Theme.textPrimary)
-                    .focused($filterFocused)
-                if !filterText.isEmpty {
-                    Button {
-                        filterText = ""
-                    } label: {
-                        ClearIcon()
-                            .foregroundColor(Theme.textTertiary)
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .cursor(.pointingHand)
-                }
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 34)
-            .background(Theme.elevated)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.divider, lineWidth: 1))
+            SearchField(placeholder: "Search shortcuts, workflows, or keys…", text: $filterText, isFocused: $filterFocused)
 
-            HStack(spacing: 4) {
-                CategoryTab(
+            ChipRow {
+                FilterChip(
                     title: ShortcutFilterTab.all.label,
                     count: nil,
                     isSelected: selectedTab == .all,
-                    namespace: tabNamespace
+                    namespace: tabNamespace,
+                    selectionId: "shortcutCategoryTab"
                 ) {
                     withAnimation(Motion.morph) { selectedTab = .all }
                 }
                 ForEach(ShortcutCategory.allCases) { category in
-                    CategoryTab(
+                    FilterChip(
                         title: ShortcutFilterTab.category(category).label,
                         count: shortcuts.actions(in: category, matching: filterText).count,
                         isSelected: selectedTab == .category(category),
-                        namespace: tabNamespace
+                        namespace: tabNamespace,
+                        selectionId: "shortcutCategoryTab"
                     ) {
                         withAnimation(Motion.morph) { selectedTab = .category(category) }
                     }
                 }
-                CategoryTab(
+                FilterChip(
                     title: ShortcutFilterTab.builtIn.label,
                     count: BuiltInKey.matching(filterText).count,
                     isSelected: selectedTab == .builtIn,
-                    namespace: tabNamespace
+                    namespace: tabNamespace,
+                    selectionId: "shortcutCategoryTab"
                 ) {
                     withAnimation(Motion.morph) { selectedTab = .builtIn }
                 }
-                Spacer(minLength: 0)
             }
         }
     }
@@ -506,11 +437,7 @@ private struct EssentialCard: View {
                 }
                 Spacer(minLength: 0)
                 if let combo {
-                    HStack(spacing: 3) {
-                        ForEach(Array(combo.keycaps.enumerated()), id: \.offset) { _, cap in
-                            KeycapLabel(cap: cap, color: isCustomized ? Theme.accent : Theme.textSecondary)
-                        }
-                    }
+                    KeycapRow(caps: combo.keycaps, tint: isCustomized ? Theme.accent : Theme.textSecondary)
                 } else {
                     Text("Unbound")
                         .font(Typography.ui(TypeScale.label))
@@ -528,49 +455,6 @@ private struct EssentialCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressButtonStyle(scale: 0.99))
-        .cursor(.pointingHand)
-        .animation(Motion.hover, value: isHovered)
-        .onHover { isHovered = $0 }
-    }
-}
-
-private struct CategoryTab: View {
-    let title: String
-    let count: Int?
-    let isSelected: Bool
-    let namespace: Namespace.ID
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Text(title)
-                    .font(Typography.ui(TypeScale.meta, isSelected ? .medium : .regular))
-                    .foregroundColor(isSelected ? Theme.textStrong : (isHovered ? Theme.textPrimary : Theme.textSecondary))
-                if let count {
-                    Text("\(count)")
-                        .font(Typography.ui(TypeScale.label))
-                        .foregroundColor(Theme.textTertiary)
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 28)
-            .background {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Theme.selected)
-                        .matchedGeometryEffect(id: "shortcutCategoryTab", in: namespace)
-                } else if isHovered {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Theme.hover)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
         .cursor(.pointingHand)
         .animation(Motion.hover, value: isHovered)
         .onHover { isHovered = $0 }
@@ -632,11 +516,7 @@ private struct ShortcutRow: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(Theme.canvas))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.accent, lineWidth: 1))
             } else if let combo {
-                HStack(spacing: 3) {
-                    ForEach(Array(combo.keycaps.enumerated()), id: \.offset) { _, cap in
-                        KeycapLabel(cap: cap, color: isCustomized ? Theme.accent : Theme.textSecondary)
-                    }
-                }
+                KeycapRow(caps: combo.keycaps, tint: isCustomized ? Theme.accent : Theme.textSecondary)
             } else {
                 Text("Unbound")
                     .font(Typography.ui(TypeScale.label))
@@ -700,8 +580,14 @@ private struct ConflictBanner: View {
 }
 
 private struct BuiltInKeysSection: View {
+    struct Group: Identifiable {
+        let context: BuiltInContext
+        let keys: [BuiltInKey]
+        var id: String { context.id }
+    }
+
     let groups: [(context: BuiltInContext, keys: [BuiltInKey])]
-    let twoColumns: Bool
+    let width: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -712,70 +598,33 @@ private struct BuiltInKeysSection: View {
                 Text("Fixed outliner & editor keys")
                     .font(Typography.ui(TypeScale.meta))
                     .foregroundColor(Theme.textTertiary)
+                    .lineLimit(1)
             }
-
-            LazyVGrid(
-                columns: twoColumns
-                    ? [GridItem(.flexible(), spacing: 16, alignment: .top), GridItem(.flexible(), spacing: 16, alignment: .top)]
-                    : [GridItem(.flexible(), alignment: .top)],
+            AdaptiveGrid(
+                items: groups.map { Group(context: $0.context, keys: $0.keys) },
+                width: width,
+                minimumColumnWidth: 320,
                 spacing: 16
-            ) {
-                ForEach(groups, id: \.context.id) { group in
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 8) {
-                            Text(group.context.title)
-                                .font(Typography.ui(TypeScale.meta, .semibold))
-                                .foregroundColor(Theme.textSecondary)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 10)
-                        .padding(.bottom, 6)
-
-                        Rectangle()
-                            .fill(Theme.divider)
-                            .frame(height: 1)
-
-                        VStack(spacing: 1) {
-                            ForEach(group.keys) { key in
-                                HStack(spacing: 10) {
-                                    Text(key.title)
-                                        .font(Typography.ui(TypeScale.meta))
-                                        .foregroundColor(Theme.textSecondary)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    HStack(spacing: 3) {
-                                        ForEach(Array(key.keycaps.enumerated()), id: \.offset) { _, cap in
-                                            KeycapLabel(cap: cap, color: Theme.textTertiary)
-                                        }
-                                    }
-                                }
-                                .padding(.horizontal, 12)
-                                .frame(height: 30)
+            ) { group in
+                Card(title: group.context.title) {
+                    VStack(spacing: 1) {
+                        ForEach(group.keys) { key in
+                            HStack(spacing: 10) {
+                                Text(key.title)
+                                    .font(Typography.ui(TypeScale.meta))
+                                    .foregroundColor(Theme.textSecondary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                KeycapRow(caps: key.keycaps, tint: Theme.textTertiary)
                             }
+                            .padding(.horizontal, 12)
+                            .frame(height: 30)
                         }
-                        .padding(.vertical, 4)
                     }
-                    .background(Theme.elevated)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.divider, lineWidth: 1))
+                    .padding(.vertical, 4)
                 }
             }
         }
     }
 }
 
-struct KeycapLabel: View {
-    let cap: String
-    let color: Color
-
-    var body: some View {
-        Text(cap)
-            .font(Typography.ui(TypeScale.meta, .medium))
-            .foregroundColor(color)
-            .frame(minWidth: 22, minHeight: 22)
-            .padding(.horizontal, 5)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.canvas))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.elevatedBorder, lineWidth: 1))
-    }
-}

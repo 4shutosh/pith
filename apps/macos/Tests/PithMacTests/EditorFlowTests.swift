@@ -151,7 +151,7 @@ final class EditorFlowTests: XCTestCase {
         XCTAssertNil(controller.completion)
     }
 
-    func testOpeningASearchHitBeyondTheLoadedRowsLoadsItsSurroundings() throws {
+    func testOpeningASearchHitBeyondTheLoadedRowsLoadsItsSurroundings() async throws {
         let graph = try PithGraph.openInMemory()
         let controller = try makeController(graph)
         controller.ensureFirstBlockAndFocus()
@@ -173,7 +173,8 @@ final class EditorFlowTests: XCTestCase {
         XCTAssertEqual(controller.rows.count, 4)
         XCTAssertFalse(controller.rows.contains { $0.renderedContent == "needle row" })
 
-        let hit = try XCTUnwrap(controller.searchHitsFor("needle").first)
+        let hits = await controller.searchHitsFor("needle")
+        let hit = try XCTUnwrap(hits.first)
         controller.openSearchHit(hit)
         XCTAssertEqual(controller.rows.first { $0.id == controller.focusedBlockId }?.renderedContent, "needle row")
     }
@@ -204,8 +205,8 @@ final class ZoomTrailTests: XCTestCase {
 }
 
 private extension OutlinerController {
-    func searchHitsFor(_ query: String) -> [FfiSearchHit] {
-        runSearch(query)
-        return searchHits
+    func searchHitsFor(_ query: String) async -> [FfiSearchHit] {
+        await runSearch(query).value
+        return search.hits
     }
 }

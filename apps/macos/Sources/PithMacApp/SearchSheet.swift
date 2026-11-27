@@ -6,18 +6,20 @@ import SwiftUI
 struct QuickSearchSheet: View {
     @ObservedObject var controller: OutlinerController
     @ObservedObject var shortcuts: ShortcutStore
+    @ObservedObject var search: PaletteSearch
     @Binding var isPresented: Bool
     var onDismiss: () -> Void = {}
     let onCommand: (AppAction) -> Void
     @State private var query: String = ""
     @State private var selected: Int = 0
+    @State private var commands: [PaletteItem] = []
     @State private var recording: AppAction?
     @State private var problem: (combo: KeyCombo, problem: BindingProblem)?
     @State private var conflict: (combo: KeyCombo, actions: [AppAction])?
     @FocusState private var inputFocused: Bool
 
     private var scope: PaletteScope {
-        controller.paletteScope
+        search.scope
     }
 
     private var trimmedQuery: String {
@@ -25,20 +27,20 @@ struct QuickSearchSheet: View {
     }
 
     private var pageHits: [FfiSearchHit] {
-        controller.searchHits.filter { if case .page = $0 { return true } else { return false } }
+        search.pageHits
     }
 
     private var blockHits: [FfiSearchHit] {
-        controller.searchHits.filter { if case .block = $0 { return true } else { return false } }
+        search.blockHits
     }
 
     private var orderedHits: [FfiSearchHit] {
-        pageHits + blockHits
+        search.pageHits + search.blockHits
     }
 
-    private var commands: [PaletteItem] {
+    private func refreshCommands() {
         let matches = controller.paletteItems(matching: trimmedQuery)
-        return trimmedQuery.isEmpty ? matches : Array(matches.prefix(5))
+        commands = trimmedQuery.isEmpty ? matches : Array(matches.prefix(5))
     }
 
     private var shortcutSections: [(category: ShortcutCategory, actions: [AppAction])] {
@@ -58,7 +60,7 @@ struct QuickSearchSheet: View {
     }
 
     private var offersCreate: Bool {
-        SearchPresentation.offersCreatePage(query: query, hits: controller.searchHits)
+        SearchPresentation.offersCreatePage(query: query, hits: search.hits)
     }
 
     private var choiceCount: Int {
@@ -94,6 +96,7 @@ struct QuickSearchSheet: View {
         .animation(Motion.fast, value: selected)
         .animation(Motion.fast, value: recording)
         .onAppear {
+            refreshCommands()
             DispatchQueue.main.async { inputFocused = true }
         }
         .onChange(of: scope) { _ in
@@ -125,11 +128,12 @@ struct QuickSearchSheet: View {
                     if scope == .everything {
                         controller.runSearch($0)
                     }
+                    refreshCommands()
                     selected = 0
                 }
-                .onSubmit(openSelected)
-            if scope == .everything && !controller.searchHits.isEmpty {
-                Text("\(controller.searchHits.count) results")
+                .onSubmit(submit)
+            if scope == .everything && !search.hits.isEmpty {
+                Text("\(search.hits.count) results")
                     .font(Typography.ui(12))
                     .foregroundColor(Theme.textTertiary)
                     .contentTransition(.numericText())
@@ -141,7 +145,7 @@ struct QuickSearchSheet: View {
     }
 
     private var everythingList: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        LazyVStack(alignment: .leading, spacing: 2) {
             if !commands.isEmpty {
                 GroupLabel(title: "Commands")
                 ForEach(Array(commands.enumerated()), id: \.offset) { index, item in
@@ -270,7 +274,7 @@ struct QuickSearchSheet: View {
             if scope == target {
                 onDismiss()
             } else {
-                controller.paletteScope = target
+                search.scope = target
             }
             return true
         }
@@ -278,12 +282,12 @@ struct QuickSearchSheet: View {
         case (.escape, []):
             onDismiss()
         case (.returnKey, []):
-            openSelected()
+            submit()
         case (.returnKey, [.command]):
             guard let action = selectedAction else { return true }
             startRecording(action)
         case (.backspace, []) where scope == .shortcuts && query.isEmpty:
-            controller.paletteScope = .everything
+            search.scope = .everything
         case (.down, []):
             moveSelection(1)
         case (.up, []):
@@ -341,6 +345,13 @@ struct QuickSearchSheet: View {
     private func open(_ hit: FfiSearchHit) {
         controller.openSearchHit(hit)
         isPresented = false
+    }
+
+    private func submit() {
+        Task {
+            await controller.searchSettled()
+            openSelected()
+        }
     }
 
     private func openSelected() {
@@ -475,24 +486,6 @@ private struct CreatePageRow: View {
     }
 }
 
-private struct KeyHint: View {
-    let keys: String
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(keys)
-                .font(Typography.ui(11))
-                .foregroundColor(Theme.textSecondary)
-                .padding(.horizontal, 5)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.elevatedBorder, lineWidth: 1))
-            Text(label)
-                .font(Typography.ui(12))
-                .foregroundColor(Theme.textTertiary)
-        }
-    }
-}
-
 private struct CommandRow: View {
     let title: String
     let keycaps: [String]
@@ -527,11 +520,7 @@ private struct CommandRow: View {
                     .frame(height: 22)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.accent, lineWidth: 1))
             } else {
-                HStack(spacing: 4) {
-                    ForEach(Array(keycaps.enumerated()), id: \.offset) { _, cap in
-                        KeycapLabel(cap: cap, color: isCustomized ? Theme.accent : Theme.textSecondary)
-                    }
-                }
+                KeycapRow(caps: keycaps, tint: isCustomized ? Theme.accent : Theme.textSecondary)
             }
         }
         .padding(.horizontal, 12)

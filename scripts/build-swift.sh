@@ -11,6 +11,7 @@ SWIFT_DIR="$PKG_DIR/Sources/PithCore"
 XCFRAMEWORK="$PKG_DIR/PithFFI.xcframework"
 
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+export PATH="$HOME/.cargo/bin:$PATH"
 
 cargo build --release -p pith-ffi
 

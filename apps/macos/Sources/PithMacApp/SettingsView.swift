@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject var sidebarStore: SidebarStore = .shared
     @Binding var themeMode: ThemeMode
     let todayTitle: String
     let contentLeading: CGFloat
@@ -11,9 +12,18 @@ struct SettingsView: View {
     @Namespace private var surfaceNamespace
     @Namespace private var dateNamespace
     @Namespace private var accentNamespace
+    @Namespace private var recentLimitNamespace
+    @Namespace private var favLimitNamespace
 
     private var hasNonDefaultSettings: Bool {
-        themeMode != .system || settings.accent != .amber || settings.surface != .warm || settings.dateFormat != .iso || !settings.showLinkBrackets
+        themeMode != .system
+            || settings.accent != .amber
+            || settings.surface != .warm
+            || settings.dateFormat != .iso
+            || !settings.showLinkBrackets
+            || !sidebarStore.showRecent
+            || sidebarStore.recentLimit != 8
+            || sidebarStore.favoritesPreviewLimit != 8
     }
 
     var body: some View {
@@ -22,56 +32,44 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     header
                     appearanceCard
+                    sidebarCard
                     datesCard
                     editorCard
                 }
                 .frame(width: contentWidth, alignment: .leading)
                 .padding(.leading, contentLeading)
-                .padding(.top, 58)
+                .padding(.top, 32)
                 .padding(.bottom, 120)
                 Spacer(minLength: 0)
             }
         }
     }
 
+    private var isNarrow: Bool {
+        contentWidth < 520
+    }
+
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Settings")
-                    .font(Typography.ui(TypeScale.pageTitle, .semibold))
-                    .tracking(-0.4)
-                    .foregroundColor(Theme.textStrong)
-                Text("Appearance, date format, and editor preferences")
-                    .font(Typography.ui(TypeScale.ui))
-                    .foregroundColor(Theme.textTertiary)
-            }
-            Spacer(minLength: 0)
+        ScreenHeader(title: "Settings") {
+            Text("Appearance, date format, and editor preferences")
+        } trailing: {
             if hasNonDefaultSettings {
-                Button {
+                SecondaryButton(title: "Reset defaults") {
                     withAnimation(Motion.fast) {
                         themeMode = .system
                         settings.resetToDefaults()
+                        sidebarStore.resetPreferences()
                     }
-                } label: {
-                    Text("Reset defaults")
-                        .font(Typography.ui(TypeScale.meta, .medium))
-                        .foregroundColor(Theme.textSecondary)
-                        .padding(.horizontal, 12)
-                        .frame(height: 28)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.hover))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.divider, lineWidth: 1))
                 }
-                .buttonStyle(PressButtonStyle(scale: 0.97))
-                .cursor(.pointingHand)
                 .transition(.opacity)
             }
         }
     }
 
     private var appearanceCard: some View {
-        SettingsCard(title: "Appearance") {
+        Card(title: "Appearance", contentPadding: 16) {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .center, spacing: 16) {
+                SettingRow(stacked: isNarrow) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Theme")
                             .font(Typography.ui(TypeScale.listRow, .medium))
@@ -80,8 +78,8 @@ struct SettingsView: View {
                             .font(Typography.ui(TypeScale.meta))
                             .foregroundColor(Theme.textTertiary)
                     }
-                    Spacer(minLength: 0)
-                    HStack(spacing: 2) {
+                } control: {
+                    SegmentedGroup {
                         ForEach(ThemeMode.allCases, id: \.self) { mode in
                             SegmentedPill(
                                 title: mode.label,
@@ -93,14 +91,11 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .padding(3)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Theme.canvas))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.divider, lineWidth: 1))
-                }
+                                }
 
                 Rectangle().fill(Theme.divider).frame(height: 1)
 
-                HStack(alignment: .center, spacing: 16) {
+                SettingRow(stacked: isNarrow) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Surface")
                             .font(Typography.ui(TypeScale.listRow, .medium))
@@ -109,8 +104,8 @@ struct SettingsView: View {
                             .font(Typography.ui(TypeScale.meta))
                             .foregroundColor(Theme.textTertiary)
                     }
-                    Spacer(minLength: 0)
-                    HStack(spacing: 2) {
+                } control: {
+                    SegmentedGroup {
                         ForEach(SurfaceStyle.allCases) { style in
                             SegmentedPill(
                                 title: style.label,
@@ -122,15 +117,12 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .padding(3)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Theme.canvas))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.divider, lineWidth: 1))
-                }
+                                }
 
                 Rectangle().fill(Theme.divider).frame(height: 1)
 
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .center, spacing: 16) {
+                    SettingRow(stacked: isNarrow) {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text("Accent")
@@ -144,7 +136,7 @@ struct SettingsView: View {
                                 .font(Typography.ui(TypeScale.meta))
                                 .foregroundColor(Theme.textTertiary)
                         }
-                        Spacer(minLength: 0)
+                    } control: {
                         HStack(spacing: 4) {
                             ForEach(AccentPalette.allCases) { palette in
                                 AccentDotButton(
@@ -162,7 +154,7 @@ struct SettingsView: View {
                         .frame(height: 32)
                         .background(Capsule().fill(Theme.canvas))
                         .overlay(Capsule().stroke(Theme.divider, lineWidth: 1))
-                    }
+                                        }
 
                     AccentLivePreview(
                         palette: settings.accent,
@@ -173,10 +165,82 @@ struct SettingsView: View {
         }
     }
 
-    private var datesCard: some View {
-        SettingsCard(title: "Dates & Journals") {
+    private var sidebarCard: some View {
+        Card(title: "Sidebar", contentPadding: 16) {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 16) {
+                SettingRow(stacked: isNarrow) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show Recent section")
+                            .font(Typography.ui(TypeScale.listRow, .medium))
+                            .foregroundColor(Theme.textPrimary)
+                        Text("Automatically lists recently updated pages not already in Favorites or a section")
+                            .font(Typography.ui(TypeScale.meta))
+                            .foregroundColor(Theme.textTertiary)
+                    }
+                } control: {
+                    Toggle("", isOn: $sidebarStore.showRecent)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .tint(Theme.accent)
+                        .cursor(.pointingHand)
+                                }
+
+                if sidebarStore.showRecent {
+                    Rectangle().fill(Theme.divider).frame(height: 1)
+
+                    SettingRow(stacked: isNarrow) {
+                        Text("Recent pages limit")
+                            .font(Typography.ui(TypeScale.listRow, .medium))
+                            .foregroundColor(Theme.textPrimary)
+                    } control: {
+                        SegmentedGroup {
+                            ForEach([5, 8, 12], id: \.self) { count in
+                                SegmentedPill(
+                                    title: "\(count)",
+                                    isSelected: sidebarStore.recentLimit == count,
+                                    namespace: recentLimitNamespace,
+                                    id: "recentLimit"
+                                ) {
+                                    withAnimation(Motion.morph) { sidebarStore.recentLimit = count }
+                                }
+                            }
+                        }
+                                        }
+                }
+
+                Rectangle().fill(Theme.divider).frame(height: 1)
+
+                SettingRow(stacked: isNarrow) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Favorites visible before “Show more”")
+                            .font(Typography.ui(TypeScale.listRow, .medium))
+                            .foregroundColor(Theme.textPrimary)
+                        Text("Keeps custom sections and Recent visible when you star many pages")
+                            .font(Typography.ui(TypeScale.meta))
+                            .foregroundColor(Theme.textTertiary)
+                    }
+                } control: {
+                    SegmentedGroup {
+                        ForEach([(6, "6"), (8, "8"), (12, "12"), (0, "All")], id: \.0) { value, label in
+                            SegmentedPill(
+                                title: label,
+                                isSelected: sidebarStore.favoritesPreviewLimit == value,
+                                namespace: favLimitNamespace,
+                                id: "favLimit"
+                            ) {
+                                withAnimation(Motion.morph) { sidebarStore.favoritesPreviewLimit = value }
+                            }
+                        }
+                    }
+                                }
+            }
+        }
+    }
+
+    private var datesCard: some View {
+        Card(title: "Dates & Journals", contentPadding: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                SettingRow(stacked: isNarrow) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Journal date format")
                             .font(Typography.ui(TypeScale.listRow, .medium))
@@ -185,8 +249,8 @@ struct SettingsView: View {
                             .font(Typography.ui(TypeScale.meta))
                             .foregroundColor(Theme.textTertiary)
                     }
-                    Spacer(minLength: 0)
-                    HStack(spacing: 2) {
+                } control: {
+                    SegmentedGroup {
                         ForEach(JournalDateFormat.allCases) { format in
                             SegmentedPill(
                                 title: format.label,
@@ -198,10 +262,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .padding(3)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Theme.canvas))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.divider, lineWidth: 1))
-                }
+                                }
 
                 HStack(spacing: 8) {
                     Text("Preview")
@@ -220,8 +281,8 @@ struct SettingsView: View {
     }
 
     private var editorCard: some View {
-        SettingsCard(title: "Editor") {
-            HStack(alignment: .center, spacing: 16) {
+        Card(title: "Editor", contentPadding: 16) {
+            SettingRow(stacked: isNarrow) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Show [[ ]] brackets around page links")
                         .font(Typography.ui(TypeScale.listRow, .medium))
@@ -241,38 +302,14 @@ struct SettingsView: View {
                     }
                     .font(Typography.ui(TypeScale.meta))
                 }
-                Spacer(minLength: 0)
+            } control: {
                 Toggle("", isOn: $settings.showLinkBrackets)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .tint(Theme.accent)
                     .cursor(.pointingHand)
-            }
+                        }
         }
-    }
-}
-
-private struct SettingsCard<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(Typography.ui(TypeScale.ui, .semibold))
-                .foregroundColor(Theme.textStrong)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 10)
-
-            Rectangle().fill(Theme.divider).frame(height: 1)
-
-            content()
-                .padding(16)
-        }
-        .background(Theme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.divider, lineWidth: 1))
     }
 }
 

@@ -54,11 +54,11 @@ final class CommandTests: XCTestCase {
 
         controller.perform(.deletePage)
         XCTAssertEqual(controller.pendingPageDelete?.title, "Scratch")
-        XCTAssertTrue(controller.pages.contains { $0.id == id })
+        XCTAssertTrue(controller.library.contains { $0.id == id })
 
         controller.confirmPendingDelete()
         XCTAssertNil(controller.pendingPageDelete)
-        XCTAssertFalse(controller.pages.contains { $0.id == id })
+        XCTAssertFalse(controller.library.contains { $0.id == id })
     }
 
     func testJournalPagesCanBeFavoritedButNotRenamedOrDeleted() throws {

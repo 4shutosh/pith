@@ -265,20 +265,11 @@ impl Store {
             "SELECT p.id, p.title, p.title_lower, p.journal_day, p.document_mode,
                     p.created_at, p.updated_at, p.created_by, p.updated_by, p.deleted_at,
                     p.version, p.favorite,
-                    COALESCE(b.cnt, 0),
-                    COALESCE(r.cnt, 0)
+                    (SELECT COUNT(*) FROM blocks b
+                     WHERE b.page_id = p.id AND b.deleted_at IS NULL),
+                    (SELECT COUNT(DISTINCT r.src_block) FROM refs r
+                     WHERE r.target = p.id)
              FROM pages p
-             LEFT JOIN (
-                 SELECT page_id, COUNT(*) AS cnt
-                 FROM blocks
-                 WHERE deleted_at IS NULL
-                 GROUP BY page_id
-             ) b ON b.page_id = p.id
-             LEFT JOIN (
-                 SELECT target, COUNT(DISTINCT src_block) AS cnt
-                 FROM refs
-                 GROUP BY target
-             ) r ON r.target = p.id
              WHERE p.deleted_at IS NULL
              ORDER BY p.updated_at DESC, p.title_lower, p.id",
         )?;
@@ -894,6 +885,27 @@ impl Store {
             .map_err(Error::from)
     }
 
+    pub fn change_cursor(&self) -> Result<crate::changes::ChangeCursor> {
+        crate::changes::change_cursor(&self.conn)
+    }
+
+    pub fn changes_after(
+        &self,
+        cursor: crate::changes::ChangeCursor,
+    ) -> Result<crate::changes::GraphChanges> {
+        crate::changes::changes_after(&self.conn, cursor)
+    }
+
+    pub fn block_rows(&self, ids: &[Id]) -> Result<Vec<FlatBlockRow>> {
+        let mut rows = Vec::with_capacity(ids.len());
+        for &id in ids {
+            if let Some(row) = self.block_row(id)? {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
     pub fn changes_since(&self, after_seq: i64, limit: usize) -> Result<ChangeFeed> {
         let data_version = self.data_version()?;
         let latest_seq = self.latest_txn_seq()?;
@@ -1114,7 +1126,9 @@ fn apply_in_tx(
         };
 
         let applied = apply_single_op(tx, &resolved_op, meta, now)?;
-        if !resolved_op.is_view_state() {
+        if resolved_op.is_view_state() {
+            record_view_change(tx, &resolved_op, meta, now)?;
+        } else {
             if let Op::RenamePage { id, .. } = &resolved_op {
                 renamed_pages.insert(*id);
             }
@@ -1415,6 +1429,12 @@ fn ensure_no_later_foreign_edits(
         }
         None => Ok(()),
     }
+}
+
+fn record_view_change(tx: &Transaction<'_>, op: &Op, meta: &TxMeta, now: i64) -> Result<()> {
+    tx.prepare_cached("INSERT INTO view_log (ts, actor, op) VALUES (?1, ?2, ?3)")?
+        .execute(params![now, meta.actor, serde_json::to_string(op)?])?;
+    Ok(())
 }
 
 fn apply_single_op(tx: &Transaction<'_>, op: &Op, meta: &TxMeta, now: i64) -> Result<AppliedOp> {

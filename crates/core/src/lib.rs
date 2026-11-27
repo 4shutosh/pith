@@ -1,4 +1,5 @@
 pub mod api;
+pub mod changes;
 pub mod derive;
 pub mod display;
 pub mod editor;
@@ -18,6 +19,7 @@ pub use api::{
     SearchResultItem, ShowResult, WriteOutcome,
 };
 
+pub use changes::{ChangeCursor, GraphChanges};
 pub use error::{Error, Result};
 pub use id::Id;
 pub use ops::Op;
