@@ -8,9 +8,4 @@ public struct PaletteItem: Equatable {
         self.title = title
         self.shortcut = shortcut
     }
-
-    func matches(_ words: [Substring]) -> Bool {
-        let haystack = (title + " " + action.keywords).lowercased()
-        return words.allSatisfy { haystack.contains($0) }
-    }
 }

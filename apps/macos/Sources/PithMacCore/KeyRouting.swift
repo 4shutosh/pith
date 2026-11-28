@@ -32,6 +32,8 @@ public enum Key: Equatable {
     case tab
     case backspace
     case forwardDelete
+    case pageUp
+    case pageDown
     case character(String)
     case other(UInt16)
 
@@ -46,6 +48,8 @@ public enum Key: Equatable {
         case 48: self = .tab
         case 51: self = .backspace
         case 117: self = .forwardDelete
+        case 116: self = .pageUp
+        case 121: self = .pageDown
         default:
             if let characters, !characters.isEmpty {
                 self = .character(characters.lowercased())

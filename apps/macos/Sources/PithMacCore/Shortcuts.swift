@@ -77,7 +77,7 @@ public enum ShortcutKey: Codable, Hashable, Equatable {
         case let .character(ch):
             guard let scalar = ch.lowercased().first else { return nil }
             self = .character(String(scalar))
-        case .other:
+        case .pageUp, .pageDown, .other:
             return nil
         }
     }
@@ -219,6 +219,8 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
     case toggleFavorite
     case renamePage
     case deletePage
+    case importLogseqGraph
+    case exportMarkdown
 
     case cycleTask
     case bold
@@ -261,6 +263,8 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         case .toggleFavorite: return "Toggle Favorite"
         case .renamePage: return "Rename Page"
         case .deletePage: return "Delete Page…"
+        case .importLogseqGraph: return "Import Logseq Graph…"
+        case .exportMarkdown: return "Export as Markdown…"
         case .cycleTask: return "Cycle Task Status"
         case .bold: return "Bold"
         case .italic: return "Italic"
@@ -300,6 +304,8 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         case .toggleFavorite: return "star pin bookmark"
         case .renamePage: return "title edit"
         case .deletePage: return "remove trash"
+        case .importLogseqGraph: return "import logseq db sqlite graph migrate"
+        case .exportMarkdown: return "export markdown archive mirror files"
         case .cycleTask: return "todo doing done"
         case .bold: return "strong format"
         case .italic: return "emphasis format"
@@ -324,7 +330,8 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         case .openPalette, .goToToday, .openJournals, .openAllPages, .searchShortcuts, .openShortcuts,
              .goBack, .goForward, .previousDay, .nextDay:
             return .navigation
-        case .newPage, .focusEditor, .findInPage, .expandAll, .collapseAll, .toggleFavorite, .renamePage, .deletePage:
+        case .newPage, .focusEditor, .findInPage, .expandAll, .collapseAll, .toggleFavorite, .renamePage, .deletePage,
+             .importLogseqGraph, .exportMarkdown:
             return .page
         case .cycleTask, .bold, .italic, .strikethrough, .highlight,
              .moveBlockUp, .moveBlockDown, .toggleBlockCollapse, .copyBlockMarkdown:
@@ -368,6 +375,8 @@ public enum AppAction: String, CaseIterable, Codable, Identifiable {
         case .toggleFavorite: return KeyCombo(.character("d"), [.command])
         case .renamePage: return KeyCombo(.character("r"), [.command, .shift])
         case .deletePage: return nil
+        case .importLogseqGraph: return nil
+        case .exportMarkdown: return nil
         case .cycleTask: return KeyCombo(.returnKey, [.command])
         case .bold: return KeyCombo(.character("b"), [.command])
         case .italic: return KeyCombo(.character("i"), [.command])
@@ -649,9 +658,17 @@ public struct BuiltInKey: Equatable, Identifiable {
         BuiltInKey(keycaps: ["S"], title: "Star / unstar the highlighted page", context: .allPages),
         BuiltInKey(keycaps: ["R"], title: "Rename the highlighted page", context: .allPages),
         BuiltInKey(keycaps: ["⌘", "⌫"], title: "Delete the highlighted page", context: .allPages),
+        BuiltInKey(keycaps: ["↑", "↓", "←", "→"], title: "Move across calendar days", context: .allPages),
+        BuiltInKey(keycaps: ["⇞", "⇟"], title: "Switch calendar month", context: .allPages),
+        BuiltInKey(keycaps: ["⌥", "←", "→"], title: "Previous / next written journal day", context: .allPages),
+        BuiltInKey(keycaps: ["T"], title: "Jump to today in calendar", context: .allPages),
+        BuiltInKey(keycaps: ["↵"], title: "Open the selected day", context: .allPages),
         BuiltInKey(keycaps: ["↑", "↓"], title: "Move through results", context: .palette),
         BuiltInKey(keycaps: ["↵"], title: "Open or run", context: .palette),
-        BuiltInKey(keycaps: ["⌘", "↵"], title: "Change the selected command's shortcut", context: .palette),
+        BuiltInKey(keycaps: ["⌘", "↵"], title: "Change the selected command's shortcut, or create a page from the search", context: .palette),
+        BuiltInKey(keycaps: ["⇥"], title: "Next filter: All, Pages, Blocks, Commands", context: .palette),
+        BuiltInKey(keycaps: ["⇧", "⇥"], title: "Previous filter", context: .palette),
+        BuiltInKey(keycaps: [">"], title: "Search commands only (type first)", context: .palette),
         BuiltInKey(keycaps: ["⌫"], title: "Leave the shortcuts filter (empty search)", context: .palette),
         BuiltInKey(keycaps: ["esc"], title: "Close", context: .palette),
     ]

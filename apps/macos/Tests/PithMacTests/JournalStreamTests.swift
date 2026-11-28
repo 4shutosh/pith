@@ -92,6 +92,40 @@ final class JournalStreamTests: XCTestCase {
         XCTAssertFalse(controller.hasOlderJournals)
     }
 
+    func testScrollingReachesTheOldestDayPastAThirtyDayWindowAndEmptyDaysTakeNoSlot() throws {
+        let graph = try PithGraph.openInMemory()
+        var dates: [String] = []
+        for month in 1...2 {
+            for day in 1...(month == 1 ? 31 : 9) {
+                dates.append(String(format: "2020-%02d-%02d", month, day))
+            }
+        }
+        for date in dates {
+            try seedJournal(graph, date, ["note \(date)"])
+        }
+        for day in 10...14 {
+            _ = try graph.applyOps(
+                ops: [.createPage(id: newId(), title: "2020-02-\(day)", journalDay: Int32(20200200 + day), documentMode: false)],
+                meta: setup
+            )
+        }
+        let controller = try makeController(graph)
+        XCTAssertEqual(controller.rows.map(\.renderedContent), [
+            "note 2020-02-09", "note 2020-02-08", "note 2020-02-07", "note 2020-02-06",
+            "note 2020-02-05", "note 2020-02-04", "note 2020-02-03",
+        ])
+
+        var loads = 0
+        while controller.hasOlderJournals && loads < 20 {
+            controller.loadOlderJournals()
+            loads += 1
+        }
+        XCTAssertEqual(loads, 5)
+        XCTAssertEqual(controller.rows.count, 40)
+        XCTAssertEqual(controller.rows.last?.renderedContent, "note 2020-01-01")
+        XCTAssertEqual(controller.journalSections.count, 41)
+    }
+
     func testOpeningOneDayLeavesTheStream() throws {
         let graph = try PithGraph.openInMemory()
         try seedJournal(graph, "2020-01-02", ["older"])

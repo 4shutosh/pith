@@ -15,6 +15,7 @@ pub struct Segment {
 pub struct LineMatch {
     pub segments: Vec<Segment>,
     pub cursor: usize,
+    pub line: String,
 }
 
 pub fn matching_lines(content: &str, query: &str) -> Vec<LineMatch> {
@@ -35,11 +36,13 @@ pub fn matching_lines(content: &str, query: &str) -> Vec<LineMatch> {
                 Some(first_match) => matches.push(LineMatch {
                     segments: highlight(&clip_around(&chars, first_match), query),
                     cursor: line_start + leading + first_match,
+                    line: line.to_string(),
                 }),
                 None if first_non_empty.is_none() => {
                     first_non_empty = Some(LineMatch {
                         segments: highlight(&clip_around(&chars, 0), query),
                         cursor: line_start + leading,
+                        line: line.to_string(),
                     });
                 }
                 None => {}
@@ -79,6 +82,24 @@ pub fn crumb(content: &str) -> String {
         .find(|line| !line.is_empty())
         .unwrap_or_default();
     truncate(first_line, MAX_CRUMB_CHARS)
+}
+
+pub fn without_link_brackets(segments: Vec<Segment>) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::new();
+    for segment in segments {
+        let text = segment.text.replace("[[", "").replace("]]", "");
+        if text.is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if last.highlighted == segment.highlighted => last.text.push_str(&text),
+            _ => out.push(Segment {
+                text,
+                highlighted: segment.highlighted,
+            }),
+        }
+    }
+    out
 }
 
 pub fn plain(segments: &[Segment]) -> String {

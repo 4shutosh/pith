@@ -225,6 +225,16 @@ public enum Theme {
     public static let done = Color(nsColor: nsDone)
     public static let danger = Color(nsColor: nsDanger)
 
+    public static func journalInk(_ ink: JournalInk) -> Color {
+        switch ink {
+        case .none: return Color.clear
+        case .light: return textStrong.opacity(0.07)
+        case .medium: return textStrong.opacity(0.13)
+        case .strong: return textStrong.opacity(0.21)
+        case .full: return textStrong.opacity(0.31)
+        }
+    }
+
     static func surface(warmDark: UInt32, warmLight: UInt32, pureDark: UInt32, pureLight: UInt32) -> NSColor {
         NSColor(name: nil) { appearance in
             let isDark = ThemeMode.isDark(appearance)

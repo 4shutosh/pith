@@ -1,3 +1,4 @@
+import PithCore
 import PithMacCore
 import SwiftUI
 
@@ -275,5 +276,40 @@ struct KeyHint: View {
                 .font(Typography.ui(12))
                 .foregroundColor(Theme.textTertiary)
         }
+    }
+}
+
+struct OutlineLine: View {
+    let depth: UInt32
+    let spans: [FfiSpan]
+    let isTarget: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle()
+                .fill(isTarget ? Theme.accent : Theme.bullet)
+                .frame(width: 4.5, height: 4.5)
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+            Text(InlineFormatter.format(spans))
+                .font(Typography.ui(TypeScale.ui))
+                .foregroundColor(isTarget ? Theme.textStrong : Theme.textBody)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.leading, CGFloat(min(depth, 4)) * 16)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(isTarget ? Theme.rowSelected : Color.clear))
+    }
+}
+
+struct PreviewNote: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Typography.ui(TypeScale.meta))
+            .foregroundColor(Theme.textTertiary)
     }
 }

@@ -1,17 +1,19 @@
 use std::sync::{Arc, Mutex};
 
 use pith_core::display::{BlockDisplay, RunStyle};
-use pith_core::journal::{local_time_of_day, resolve_journal_date, shift_journal_date};
+use pith_core::journal::{
+    format_journal_day, local_time_of_day, parse_iso_date, resolve_journal_date, shift_journal_date,
+};
 use pith_core::parser::{
     self, CompletionContext, CompletionKind, HighlightKind, InlineFormat, SlashClock, SlashCommand,
     highlight_ranges,
 };
 use pith_core::snippet::Segment;
 use pith_core::{
-    ApplyResult, Backlink, BlockKind, BlockLocation, BlockProp, ChangeCursor, ChangeEntry,
-    ChangeFeed, EditOutcome, Error, FlatBlockRow, GraphChanges, Id, LinkPreview, Op, Origin, Page,
-    PageMatch, PageSummary, PageWindow, PreviewLine, RenderedSpan, SearchHit, Store, TxMeta,
-    UnlinkedRef, order,
+    ApplyResult, Backlink, BlockContext, BlockKind, BlockLocation, BlockProp, ChangeCursor,
+    ChangeEntry, ChangeFeed, ContextLine, EditOutcome, Error, FlatBlockRow, GraphChanges, Id,
+    LinkPreview, Op, Origin, Page, PageMatch, PageSummary, PageWindow, PreviewLine, RenderedSpan,
+    SearchHit, Store, TxMeta, UnlinkedRef, order,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -32,6 +34,15 @@ pub enum FfiError {
 
 impl From<Error> for FfiError {
     fn from(err: Error) -> Self {
+        Self::Core {
+            code: err.code().to_string(),
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<pith_md::Error> for FfiError {
+    fn from(err: pith_md::Error) -> Self {
         Self::Core {
             code: err.code().to_string(),
             message: err.to_string(),
@@ -120,6 +131,13 @@ impl From<Page> for FfiPage {
             updated_at: page.updated_at,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiJournalDay {
+    pub date: String,
+    pub page_id: String,
+    pub block_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -347,6 +365,46 @@ impl From<PreviewLine> for FfiPreviewLine {
         Self {
             depth: line.depth,
             spans: line.spans.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiContextLine {
+    pub depth: u32,
+    pub spans: Vec<FfiSpan>,
+    pub is_target: bool,
+}
+
+impl From<ContextLine> for FfiContextLine {
+    fn from(line: ContextLine) -> Self {
+        Self {
+            depth: line.depth,
+            spans: line.spans.into_iter().map(Into::into).collect(),
+            is_target: line.is_target,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiBlockContext {
+    pub page_id: String,
+    pub page_title: String,
+    pub journal_day: Option<i32>,
+    pub crumbs: Vec<String>,
+    pub lines: Vec<FfiContextLine>,
+    pub updated_at: i64,
+}
+
+impl From<BlockContext> for FfiBlockContext {
+    fn from(context: BlockContext) -> Self {
+        Self {
+            page_id: context.page_id.to_string(),
+            page_title: context.page_title,
+            journal_day: context.journal_day,
+            crumbs: context.crumbs,
+            lines: context.lines.into_iter().map(Into::into).collect(),
+            updated_at: context.updated_at,
         }
     }
 }
@@ -587,21 +645,25 @@ impl From<ApplyResult> for FfiApplyResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum FfiSearchHit {
     Page {
         page_id: String,
         title: String,
         highlighted_title: Vec<FfiSegment>,
+        journal_day: Option<i32>,
+        backlink_count: u32,
+        score: u32,
     },
     Block {
         block_id: String,
         page_id: String,
         page_title: String,
+        page_journal_day: Option<i32>,
         breadcrumb: Vec<String>,
         snippet: Vec<FfiSegment>,
         cursor: u32,
-        rank: f64,
+        score: u32,
     },
 }
 
@@ -627,28 +689,35 @@ impl From<SearchHit> for FfiSearchHit {
                 page_id,
                 title,
                 highlighted_title,
+                journal_day,
+                backlink_count,
+                score,
             } => Self::Page {
                 page_id: page_id.to_string(),
                 title,
                 highlighted_title: highlighted_title.into_iter().map(Into::into).collect(),
+                journal_day,
+                backlink_count,
+                score,
             },
             SearchHit::Block {
                 block_id,
                 page_id,
                 page_title,
+                page_journal_day,
                 breadcrumb,
                 snippet,
                 cursor,
-                rank,
-                ..
+                score,
             } => Self::Block {
                 block_id: block_id.to_string(),
                 page_id: page_id.to_string(),
                 page_title,
+                page_journal_day,
                 breadcrumb,
                 snippet: snippet.into_iter().map(Into::into).collect(),
                 cursor,
-                rank,
+                score,
             },
         }
     }
@@ -888,6 +957,134 @@ impl From<ChangeFeed> for FfiChangeFeed {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiSkippedCounts {
+    pub built_in_or_hidden: u64,
+    pub recycled_or_deleted: u64,
+    pub views: u64,
+    pub assets: u64,
+    pub whiteboards: u64,
+    pub properties: u64,
+    pub history: u64,
+    pub files: u64,
+    pub kv: u64,
+    pub other: u64,
+}
+
+impl From<pith_md::SkippedCounts> for FfiSkippedCounts {
+    fn from(s: pith_md::SkippedCounts) -> Self {
+        Self {
+            built_in_or_hidden: s.built_in_or_hidden as u64,
+            recycled_or_deleted: s.recycled_or_deleted as u64,
+            views: s.views as u64,
+            assets: s.assets as u64,
+            whiteboards: s.whiteboards as u64,
+            properties: s.properties as u64,
+            history: s.history as u64,
+            files: s.files as u64,
+            kv: s.kv as u64,
+            other: s.other as u64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiUnresolvedRef {
+    pub source_block: String,
+    pub kind: String,
+    pub target: String,
+}
+
+impl From<pith_md::UnresolvedRef> for FfiUnresolvedRef {
+    fn from(r: pith_md::UnresolvedRef) -> Self {
+        Self {
+            source_block: r.source_block,
+            kind: r.kind,
+            target: r.target,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiDowngradeSample {
+    pub kind: String,
+    pub count: u64,
+    pub samples: Vec<String>,
+}
+
+impl From<pith_md::DowngradeSample> for FfiDowngradeSample {
+    fn from(d: pith_md::DowngradeSample) -> Self {
+        Self {
+            kind: d.kind,
+            count: d.count as u64,
+            samples: d.samples,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiImportReport {
+    pub schema_major: i64,
+    pub schema_minor: i64,
+    pub dry_run: bool,
+    pub pages_imported: u64,
+    pub journals_imported: u64,
+    pub blocks_imported: u64,
+    pub collapsed_applied: u64,
+    pub favorites_applied: u64,
+    pub pages_already_present: u64,
+    pub blocks_already_present: u64,
+    pub txns_written: u64,
+    pub skipped: FfiSkippedCounts,
+    pub unresolved_refs: Vec<FfiUnresolvedRef>,
+    pub downgraded: Vec<FfiDowngradeSample>,
+}
+
+impl From<pith_md::ImportReport> for FfiImportReport {
+    fn from(r: pith_md::ImportReport) -> Self {
+        Self {
+            schema_major: r.schema_major,
+            schema_minor: r.schema_minor,
+            dry_run: r.dry_run,
+            pages_imported: r.pages_imported as u64,
+            journals_imported: r.journals_imported as u64,
+            blocks_imported: r.blocks_imported as u64,
+            collapsed_applied: r.collapsed_applied as u64,
+            favorites_applied: r.favorites_applied as u64,
+            pages_already_present: r.pages_already_present as u64,
+            blocks_already_present: r.blocks_already_present as u64,
+            txns_written: r.txns_written as u64,
+            skipped: r.skipped.into(),
+            unresolved_refs: r.unresolved_refs.into_iter().map(Into::into).collect(),
+            downgraded: r.downgraded.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiExportReport {
+    pub pages_exported: u64,
+    pub journals_exported: u64,
+    pub blocks_exported: u64,
+    pub files_written: u64,
+}
+
+impl From<pith_md::ExportReport> for FfiExportReport {
+    fn from(r: pith_md::ExportReport) -> Self {
+        Self {
+            pages_exported: r.pages_exported as u64,
+            journals_exported: r.journals_exported as u64,
+            blocks_exported: r.blocks_exported as u64,
+            files_written: r.files_written as u64,
+        }
+    }
+}
+
+#[uniffi::export(callback_interface)]
+pub trait FfiProgressCallback: Send + Sync {
+    fn on_progress(&self, done: u64, total: u64) -> bool;
+}
+
 #[derive(uniffi::Object)]
 pub struct PithGraph {
     store: Mutex<Store>,
@@ -909,6 +1106,42 @@ impl PithGraph {
         Ok(Arc::new(Self {
             store: Mutex::new(store),
         }))
+    }
+
+    pub fn import_logseq_db(
+        &self,
+        source_path: String,
+        dry_run: bool,
+        actor: String,
+        progress: Box<dyn FfiProgressCallback>,
+    ) -> Result<FfiImportReport, FfiError> {
+        let mut store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        let options = pith_md::ImportOptions {
+            dry_run,
+            actor,
+            ..pith_md::ImportOptions::default()
+        };
+        let report = pith_md::import_logseq_db_with_progress(
+            std::path::Path::new(&source_path),
+            &mut store,
+            &options,
+            |done, total| progress.on_progress(done as u64, total as u64),
+        )?;
+        Ok(report.into())
+    }
+
+    pub fn export_markdown(
+        &self,
+        out_dir: String,
+        progress: Box<dyn FfiProgressCallback>,
+    ) -> Result<FfiExportReport, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        let report = pith_md::export_markdown_with_progress(
+            &store,
+            std::path::Path::new(&out_dir),
+            |done, total| progress.on_progress(done as u64, total as u64),
+        )?;
+        Ok(report.into())
     }
 
     pub fn list_pages(&self) -> Result<Vec<FfiPage>, FfiError> {
@@ -1081,6 +1314,19 @@ impl PithGraph {
             .map(Into::into))
     }
 
+    pub fn search_context(
+        &self,
+        block_id: String,
+        before: u32,
+        after: u32,
+    ) -> Result<Option<FfiBlockContext>, FfiError> {
+        let block_id = parse_id(&block_id)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .search_context(block_id, before as usize, after as usize)?
+            .map(Into::into))
+    }
+
     pub fn preview_block(
         &self,
         block_id: String,
@@ -1151,6 +1397,29 @@ impl PithGraph {
             .suggest_pages(&query, limit as usize)?
             .into_iter()
             .map(Into::into)
+            .collect())
+    }
+
+    pub fn journals_before(&self, date: String, limit: u32) -> Result<Vec<FfiPage>, FfiError> {
+        let (journal_day, _) = parse_iso_date(&date)?;
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .journals_before(journal_day, limit as usize)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub fn journal_activity(&self) -> Result<Vec<FfiJournalDay>, FfiError> {
+        let store = self.store.lock().map_err(|_| FfiError::LockPoisoned)?;
+        Ok(store
+            .journal_activity(i32::MIN..=i32::MAX)?
+            .into_iter()
+            .map(|day| FfiJournalDay {
+                date: format_journal_day(day.journal_day),
+                page_id: day.page_id.to_string(),
+                block_count: day.block_count,
+            })
             .collect())
     }
 
@@ -1611,6 +1880,11 @@ pub fn apply_completion(text: String, context: FfiCompletionContext, value: Stri
         text,
         caret: caret as u32,
     }
+}
+
+#[uniffi::export]
+pub fn command_score(title: String, keywords: String, query: String) -> Option<u32> {
+    pith_core::ranking::command_score(&title, &keywords, &query)
 }
 
 #[uniffi::export]

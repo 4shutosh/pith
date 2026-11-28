@@ -697,3 +697,121 @@ fn starting_a_page_creates_it_with_its_first_block_in_one_undoable_step() -> Res
     assert!(store.start_page("Untitled", &user_meta("taken")).is_err());
     Ok(())
 }
+
+fn write_journal(store: &mut Store, day: &str, texts: &[&str]) -> Result<Id> {
+    let first = store.start_journal(Some(day), &user_meta(day))?.focus_block;
+    let page_id = store.get_block(first)?.context("first block")?.page_id;
+    let mut key = store.get_block(first)?.context("first block")?.order_key;
+    let mut ops = vec![Op::UpdateBlock {
+        id: first,
+        content: texts[0].to_string(),
+        expected_version: None,
+    }];
+    for text in &texts[1..] {
+        key = order::between(Some(&key), None)?;
+        ops.push(Op::InsertBlock {
+            id: Id::new(),
+            page_id,
+            parent_id: None,
+            order_key: key.clone(),
+            content: text.to_string(),
+        });
+    }
+    store.apply_ops(&ops, &user_meta("write"))?;
+    Ok(page_id)
+}
+
+fn delete_block_of(store: &mut Store, page_id: Id) -> Result<()> {
+    let block = store
+        .list_children(page_id, None)?
+        .into_iter()
+        .next()
+        .context("a block")?;
+    store.apply_ops(
+        &[Op::DeleteBlock {
+            id: block.id,
+            expected_version: None,
+        }],
+        &user_meta("delete block"),
+    )?;
+    Ok(())
+}
+
+fn create_empty_journal(store: &mut Store, title: &str, day: i32) -> Result<()> {
+    store.apply_ops(
+        &[Op::CreatePage {
+            id: Id::new(),
+            title: title.to_string(),
+            journal_day: Some(day),
+            document_mode: false,
+        }],
+        &user_meta("empty journal"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn journals_before_pages_older_written_journals_and_skips_unwritten_days() -> Result<()> {
+    let mut f = Fixture::new()?;
+    for day in [
+        "2026-10-30",
+        "2026-11-01",
+        "2026-11-02",
+        "2026-11-03",
+        "2026-11-28",
+    ] {
+        write_journal(&mut f.store, day, &["note"])?;
+    }
+    create_empty_journal(&mut f.store, "2026-10-31", 20261031)?;
+    write_journal(&mut f.store, "2026-10-29", &["   "])?;
+    let deleted = write_journal(&mut f.store, "2026-10-28", &["gone"])?;
+    delete_block_of(&mut f.store, deleted)?;
+    let titles = |before: i32, limit: usize| -> Result<Vec<String>> {
+        Ok(f.store
+            .journals_before(before, limit)?
+            .into_iter()
+            .map(|p| p.title)
+            .collect())
+    };
+    assert_eq!(titles(20261128, 2)?, vec!["2026-11-03", "2026-11-02"]);
+    assert_eq!(titles(20261102, 10)?, vec!["2026-11-01", "2026-10-30"]);
+    assert_eq!(titles(20261030, 10)?, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
+fn journal_activity_counts_written_blocks_per_day_in_an_inclusive_range() -> Result<()> {
+    let mut f = Fixture::new()?;
+    write_journal(&mut f.store, "2026-10-25", &["before the range"])?;
+    let busy = write_journal(&mut f.store, "2026-10-26", &["one", "", "two", "three"])?;
+    let mid = write_journal(&mut f.store, "2026-11-15", &["mid"])?;
+    write_journal(&mut f.store, "2026-12-06", &["last day", "again"])?;
+    write_journal(&mut f.store, "2026-12-07", &["after the range"])?;
+    create_empty_journal(&mut f.store, "2026-11-05", 20261105)?;
+    write_journal(&mut f.store, "2026-11-08", &[" ", "\t"])?;
+    let deleted_block = write_journal(&mut f.store, "2026-11-10", &["gone"])?;
+    delete_block_of(&mut f.store, deleted_block)?;
+    let deleted_page = write_journal(&mut f.store, "2026-11-20", &["page gone"])?;
+    f.store.apply_ops(
+        &[Op::DeletePage {
+            id: deleted_page,
+            expected_version: None,
+        }],
+        &user_meta("delete page"),
+    )?;
+
+    let days: Vec<(i32, u32)> = f
+        .store
+        .journal_activity(20261026..=20261206)?
+        .into_iter()
+        .map(|d| (d.journal_day, d.block_count))
+        .collect();
+    assert_eq!(days, vec![(20261026, 3), (20261115, 1), (20261206, 2)]);
+
+    let november = f.store.journal_activity(20261101..=20261130)?;
+    assert_eq!(november.len(), 1);
+    assert_eq!(november[0].page_id, mid);
+    assert_ne!(november[0].page_id, busy);
+    assert!(f.store.journal_activity(20261116..=20261205)?.is_empty());
+    Ok(())
+}

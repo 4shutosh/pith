@@ -33,7 +33,7 @@ pub enum SearchResultItem {
         page_title: String,
         breadcrumb: Vec<String>,
         matched_line: String,
-        rank: f64,
+        score: u32,
     },
 }
 
@@ -178,7 +178,7 @@ impl<'a> Api<'a> {
                     page_title,
                     breadcrumb,
                     snippet,
-                    rank,
+                    score,
                     ..
                 } => out.push(SearchResultItem::Block {
                     id: block_id,
@@ -188,7 +188,7 @@ impl<'a> Api<'a> {
                     page_title,
                     breadcrumb,
                     matched_line: crate::snippet::plain(&snippet),
-                    rank,
+                    score,
                 }),
             }
         }

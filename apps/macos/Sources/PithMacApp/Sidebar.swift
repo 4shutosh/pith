@@ -608,12 +608,13 @@ private struct SidebarPageItem: View {
     let onToggleFavorite: () -> Void
     let onNewSectionWithPage: () -> Void
     let onDelete: (() -> Void)?
+    @ObservedObject private var settings = AppSettings.shared
     @State private var isHovered = false
 
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: 0) {
-                Text(page.title)
+                Text(PageDirectory.displayTitle(page, format: settings.dateFormat))
                     .font(Typography.ui(13, isSelected ? .medium : .regular))
                     .foregroundColor(isSelected || isHovered ? Theme.textStrong : Theme.textSecondary)
                     .lineLimit(1)

@@ -13,6 +13,7 @@ const CAPTURE_BUDGET_MS: f64 = 16.0;
 const SEARCH_BUDGET_MS: f64 = 30.0;
 const BACKLINKS_BUDGET_MS: f64 = 10.0;
 const SUMMARIES_BUDGET_MS: f64 = 50.0;
+const EXPORT_BUDGET_SECS: f64 = 15.0;
 
 const TOPICS: &[&str] = &[
     "architecture",
@@ -131,6 +132,12 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
         })?
     };
 
+    let export_dir = env::temp_dir().join(format!("pith-bench-export-{}", Id::new()));
+    let export_start = Instant::now();
+    let export_report = pith_md::export_markdown(&store, &export_dir)?;
+    let export_elapsed = export_start.elapsed().as_secs_f64();
+    let _ = std::fs::remove_dir_all(&export_dir);
+
     println!();
     println!("Results ({ITERATIONS} runs on {TOTAL_BLOCKS} blocks, trigram FTS5):");
     println!(
@@ -160,6 +167,10 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
     println!(
         "  page summaries (all)  : p50={:>6.2} ms  p95={:>6.2} ms  (budget < {SUMMARIES_BUDGET_MS:.0} ms)",
         summaries.median_ms, summaries.p95_ms
+    );
+    println!(
+        "  markdown export       : {:>6.2} s ({} files, {} blocks)  (budget < {EXPORT_BUDGET_SECS:.0} s)",
+        export_elapsed, export_report.files_written, export_report.blocks_exported
     );
 
     if check_budgets {
@@ -197,6 +208,12 @@ fn run_benchmarks(db_path: &std::path::Path, check_budgets: bool) -> Result<()> 
             bail!(
                 "api.search p95 exceeded budget: {:.2} ms >= {SEARCH_BUDGET_MS:.0} ms",
                 api_search.p95_ms
+            );
+        }
+        if export_elapsed >= EXPORT_BUDGET_SECS {
+            bail!(
+                "markdown export exceeded budget: {:.2} s >= {EXPORT_BUDGET_SECS:.0} s",
+                export_elapsed
             );
         }
     }

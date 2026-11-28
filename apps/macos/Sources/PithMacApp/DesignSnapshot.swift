@@ -42,7 +42,19 @@ enum DesignSnapshot {
             }
 
             controller.showAllPages()
+            controller.directory.selectedTab = .pages
             await capture(window, directory, "\(mode.rawValue)-5-all-pages")
+
+            controller.directory.selectedTab = .journals
+            for width in [1280, 520, 380] {
+                window.setContentSize(NSSize(width: width, height: 820))
+                controller.directory.journalCalendar = nil
+                await capture(window, directory, "\(mode.rawValue)-12-calendar-\(width)")
+                controller.directory.journalCalendar = JournalDay(iso: "2026-11-26").map(JournalCalendarState.init(selected:))
+                await capture(window, directory, "\(mode.rawValue)-12-calendar-\(width)-written")
+            }
+            controller.directory.journalCalendar = nil
+            window.setContentSize(NSSize(width: 1280, height: 820))
 
             controller.showShortcuts()
             await capture(window, directory, "\(mode.rawValue)-7-shortcuts")
@@ -58,6 +70,19 @@ enum DesignSnapshot {
             controller.openTodayJournal()
             showSidebar.wrappedValue = false
             await capture(window, directory, "\(mode.rawValue)-6-sidebar-hidden")
+
+            for width in [1280, 520, 380] {
+                window.setContentSize(NSSize(width: width, height: 820))
+                for (name, query) in [("recent", ""), ("pith", "pith"), ("block", "planned week")] {
+                    showSearch.wrappedValue = true
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    controller.search.input = query
+                    await capture(window, directory, "\(mode.rawValue)-11-palette-\(width)-\(name)")
+                    showSearch.wrappedValue = false
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+            }
+            window.setContentSize(NSSize(width: 1280, height: 820))
         }
         NSApp.terminate(nil)
     }

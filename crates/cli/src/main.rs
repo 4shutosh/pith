@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use pith_core::{Api, Error, Origin, SearchResultItem, ShowResult, Store, TxMeta, WriteOutcome};
+use pith_md::{ExportReport, ImportOptions, ImportReport, export_markdown, import_logseq_db};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -39,6 +40,9 @@ struct Cli {
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Human, global = true)]
     output: OutputFormat,
+
+    #[arg(long, global = true)]
+    json: bool,
 
     #[arg(long, env = "PITH_ACTOR", default_value = "me", global = true)]
     actor: String,
@@ -129,8 +133,24 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    Import {
+        #[command(subcommand)]
+        source: ImportSource,
+    },
+    Export {
+        out_dir: PathBuf,
+    },
     Example {
         cmd: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ImportSource {
+    Logseq {
+        path: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -159,8 +179,21 @@ impl From<Error> for Failure {
     }
 }
 
+impl From<pith_md::Error> for Failure {
+    fn from(err: pith_md::Error) -> Self {
+        Self {
+            error: err.code(),
+            message: err.to_string(),
+            hint: None,
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.json {
+        cli.output = OutputFormat::Json;
+    }
     let output = cli.output;
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -185,6 +218,28 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
 
     let mut store = Store::open(&db_path)?;
+
+    match cli.command {
+        Command::Import {
+            source: ImportSource::Logseq { path, dry_run },
+        } => {
+            let options = ImportOptions {
+                dry_run,
+                actor: cli.actor,
+                ..ImportOptions::default()
+            };
+            let report = import_logseq_db(&path, &mut store, &options)?;
+            print_import_report(cli.output, &report)?;
+            return Ok(());
+        }
+        Command::Export { out_dir } => {
+            let report = export_markdown(&store, &out_dir)?;
+            print_export_report(cli.output, &report)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let mut api = Api::new(&mut store);
     let outcome = dispatch(&mut api, cli);
     outcome.map_err(|err| {
@@ -377,9 +432,87 @@ fn dispatch(api: &mut Api<'_>, cli: Cli) -> Result<(), Error> {
             let outcome = api.undo(&txn_id, &make_meta("undo"), force, dry_run)?;
             print_write_outcome(cli.output, &outcome)?;
         }
-        Command::Example { .. } => {}
+        Command::Import { .. } | Command::Export { .. } | Command::Example { .. } => {}
     }
 
+    Ok(())
+}
+
+fn print_import_report(format: OutputFormat, report: &ImportReport) -> Result<(), Failure> {
+    match format {
+        OutputFormat::Json => {
+            print_json(report)?;
+        }
+        OutputFormat::Human => {
+            let mode = if report.dry_run { "Dry run" } else { "Import" };
+            println!(
+                "{mode} complete (Logseq schema {}.{}):",
+                report.schema_major, report.schema_minor
+            );
+            println!(
+                "  Pages: {} imported ({} already present)",
+                report.pages_imported, report.pages_already_present
+            );
+            println!("  Journals: {} imported", report.journals_imported);
+            println!(
+                "  Blocks: {} imported ({} already present)",
+                report.blocks_imported, report.blocks_already_present
+            );
+            println!(
+                "  State: {} collapsed, {} favorites, {} txns written",
+                report.collapsed_applied, report.favorites_applied, report.txns_written
+            );
+            let s = &report.skipped;
+            println!(
+                "  Skipped: {} total (built-in/hidden={}, recycled/deleted={}, views={}, assets={}, whiteboards={}, properties={}, history={}, files={}, kv={}, other={})",
+                s.total(),
+                s.built_in_or_hidden,
+                s.recycled_or_deleted,
+                s.views,
+                s.assets,
+                s.whiteboards,
+                s.properties,
+                s.history,
+                s.files,
+                s.kv,
+                s.other
+            );
+            println!("  Unresolved refs: {}", report.unresolved_refs.len());
+            for item in report.unresolved_refs.iter().take(5) {
+                println!(
+                    "    [{}] block {} -> {}",
+                    item.kind, item.source_block, item.target
+                );
+            }
+            if !report.downgraded.is_empty() {
+                println!("  Downgraded features:");
+                for item in &report.downgraded {
+                    println!("    {}: {}", item.kind, item.count);
+                    for sample in item.samples.iter().take(3) {
+                        println!("      - {sample}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_export_report(format: OutputFormat, report: &ExportReport) -> Result<(), Failure> {
+    match format {
+        OutputFormat::Json => {
+            print_json(report)?;
+        }
+        OutputFormat::Human => {
+            println!(
+                "Exported {} pages, {} journals, {} blocks ({} files).",
+                report.pages_exported,
+                report.journals_exported,
+                report.blocks_exported,
+                report.files_written
+            );
+        }
+    }
     Ok(())
 }
 
@@ -456,8 +589,12 @@ fn print_example(cmd: Option<&str>) {
         Some("rm") => println!("pith rm a1b2c3 --expected-version 1"),
         Some("history") => println!("pith history\npith history --by agent:claude --limit 10"),
         Some("undo") => println!("pith undo 9f1c2e\npith undo 9f1c2e --force"),
+        Some("import") => println!(
+            "pith import logseq export.sqlite --dry-run\npith import logseq export.sqlite --json"
+        ),
+        Some("export") => println!("pith export ./markdown-backup\npith export ./backup --json"),
         _ => println!(
-            "pith journal \"Hello [[Roadmap]]\"\npith show \"Roadmap\"\npith search \"Hello\"\npith backlinks \"Roadmap\"\npith history\npith undo <txn-id>\n\nRun `pith example <cmd>` for command-specific examples."
+            "pith journal \"Hello [[Roadmap]]\"\npith show \"Roadmap\"\npith search \"Hello\"\npith backlinks \"Roadmap\"\npith import logseq export.sqlite --dry-run\npith export ./backup\npith history\npith undo <txn-id>\n\nRun `pith example <cmd>` for command-specific examples."
         ),
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::ops::RangeInclusive;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,8 +13,8 @@ use crate::ops::Op;
 use crate::parser;
 use crate::schema::configure_and_migrate;
 use crate::types::{
-    ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, Crumb, FlatBlockRow, OpRecord, Origin,
-    Page, PageWindow, PropRecord, SearchHit, TxMeta, TxnRecord,
+    ApplyResult, Backlink, Block, ChangeEntry, ChangeFeed, Crumb, FlatBlockRow, JournalActivity,
+    OpRecord, Origin, Page, PageWindow, PropRecord, SearchHit, TxMeta, TxnRecord,
 };
 
 pub(crate) struct VisibleBlock {
@@ -243,6 +244,49 @@ impl Store {
         Ok(out)
     }
 
+    pub fn journals_before(&self, journal_day: i32, limit: usize) -> Result<Vec<Page>> {
+        let sql = format!(
+            "SELECT id, title, title_lower, journal_day, document_mode,
+                    created_at, updated_at, created_by, updated_by, deleted_at, version, favorite
+             FROM pages
+             WHERE deleted_at IS NULL AND journal_day IS NOT NULL AND journal_day < ?1
+               AND EXISTS (SELECT 1 FROM blocks WHERE {WRITTEN_BLOCK})
+             ORDER BY journal_day DESC
+             LIMIT ?2"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![journal_day, limit as i64], row_to_page)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn journal_activity(&self, days: RangeInclusive<i32>) -> Result<Vec<JournalActivity>> {
+        let sql = format!(
+            "SELECT pages.id, pages.journal_day, COUNT(*)
+             FROM pages JOIN blocks ON {WRITTEN_BLOCK}
+             WHERE pages.deleted_at IS NULL AND pages.journal_day BETWEEN ?1 AND ?2
+             GROUP BY pages.id
+             ORDER BY pages.journal_day ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![days.start(), days.end()], |row| {
+            let id_bytes: Vec<u8> = row.get(0)?;
+            Ok(JournalActivity {
+                page_id: Id::from_slice(&id_bytes).ok_or(rusqlite::Error::InvalidQuery)?,
+                journal_day: row.get(1)?,
+                block_count: row.get(2)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn list_journals(&self, limit: usize) -> Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, title_lower, journal_day, document_mode,
@@ -424,13 +468,31 @@ impl Store {
         Ok(LiveSnapshot { pages, blocks })
     }
 
+    pub fn referenced_block_ids(&self) -> Result<std::collections::HashSet<Id>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT target FROM refs WHERE kind = 'block'")?;
+        let rows = stmt.query_map([], |row| {
+            let bytes: Vec<u8> = row.get(0)?;
+            Ok(bytes)
+        })?;
+        let mut out = std::collections::HashSet::new();
+        for row in rows {
+            let bytes = row?;
+            if let Some(id) = Id::from_slice(&bytes) {
+                out.insert(id);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn render_content(&self, content: &str) -> Result<String> {
         let mut cache = HashMap::new();
         derive::render_content_with_cache(&self.conn, &mut cache, content)
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-        derive::search_blocks(&self.conn, query, limit)
+        derive::search_blocks(&self.conn, query, limit, now_millis())
     }
 
     pub fn backlinks(&self, target: Id) -> Result<Vec<Backlink>> {
@@ -688,6 +750,61 @@ impl Store {
             total_blocks,
             backlink_count: 0,
             parent_path,
+        }))
+    }
+
+    pub fn search_context(
+        &self,
+        block_id: Id,
+        before: usize,
+        after: usize,
+    ) -> Result<Option<crate::types::BlockContext>> {
+        let Some(block) = self.get_block(block_id)? else {
+            return Ok(None);
+        };
+        if block.deleted_at.is_some() {
+            return Ok(None);
+        }
+        let page = self
+            .get_page(block.page_id)?
+            .ok_or(Error::NotFound(block.page_id))?;
+        if page.deleted_at.is_some() {
+            return Ok(None);
+        }
+        let all = self.walk_tree(block.page_id, None, true)?;
+        let Some(target) = all.iter().position(|v| v.block.id == block_id) else {
+            return Ok(None);
+        };
+        let start = target.saturating_sub(before);
+        let end = target
+            .saturating_add(after)
+            .saturating_add(1)
+            .min(all.len());
+        let window = &all[start..end];
+        let base_depth = window.iter().map(|v| v.depth).min().unwrap_or(0);
+        let mut title_cache: HashMap<Id, Option<derive::PageLookup>> = HashMap::new();
+        let mut lines = Vec::with_capacity(window.len());
+        for item in window {
+            lines.push(crate::types::ContextLine {
+                depth: item.depth - base_depth,
+                spans: derive::render_spans(&self.conn, &mut title_cache, &item.block.content)?,
+                is_target: item.block.id == block_id,
+            });
+        }
+        let crumbs = self.block_breadcrumb(block_id)?;
+        let parents = crumbs
+            .iter()
+            .skip(1)
+            .take(crumbs.len().saturating_sub(2))
+            .map(|c| c.label.clone())
+            .collect();
+        Ok(Some(crate::types::BlockContext {
+            page_id: page.id,
+            page_title: page.title,
+            journal_day: page.journal_day,
+            crumbs: parents,
+            lines,
+            updated_at: block.updated_at,
         }))
     }
 
@@ -2171,6 +2288,8 @@ fn collect_page_live_blocks_top_down(tx: &Transaction<'_>, page_id: Id) -> Resul
 
     Ok(result)
 }
+
+const WRITTEN_BLOCK: &str = "blocks.page_id = pages.id AND blocks.deleted_at IS NULL AND trim(blocks.content, ' ' || char(9) || char(10) || char(13)) <> ''";
 
 fn row_to_page(row: &Row<'_>) -> rusqlite::Result<Page> {
     let id_bytes: Vec<u8> = row.get(0)?;

@@ -1,6 +1,7 @@
 import AppKit
 import PithMacCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 struct ActionPerformer {
@@ -36,8 +37,40 @@ struct ActionPerformer {
             }
         case .toggleTheme:
             themeMode.wrappedValue = ThemeMode.toggled(currentlyDark: ThemeMode.isDark(NSApp.effectiveAppearance))
+        case .importLogseqGraph:
+            pickLogseqExport()
+        case .exportMarkdown:
+            pickExportDirectory()
         default:
             controller.perform(action)
+        }
+    }
+
+    private func pickLogseqExport() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Logseq Graph"
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let sqliteType = UTType(filenameExtension: "sqlite") {
+            panel.allowedContentTypes = [sqliteType]
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            controller.startLogseqImport(sourcePath: url.path)
+        }
+    }
+
+    private func pickExportDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Export as Markdown"
+        panel.prompt = "Export"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            controller.startMarkdownExport(outDir: url.path)
         }
     }
 

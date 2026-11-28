@@ -21,7 +21,7 @@ final class CommandTests: XCTestCase {
         let controller = try OutlinerController(graph: try PithGraph.openInMemory())
         XCTAssertEqual(
             titles(controller),
-            ["Go to Today and Write", "Go to Journals", "Go to All Pages", "Search Keyboard Shortcuts", "Keyboard Shortcuts Settings", "Previous Journal Day", "Next Journal Day", "New Page", "Focus Editor", "Toggle Sidebar", "Toggle Light / Dark", "Settings"]
+            ["Go to Today and Write", "Go to Journals", "Go to All Pages", "Search Keyboard Shortcuts", "Keyboard Shortcuts Settings", "Previous Journal Day", "Next Journal Day", "New Page", "Focus Editor", "Import Logseq Graph…", "Export as Markdown…", "Toggle Sidebar", "Toggle Light / Dark", "Settings"]
         )
     }
 
@@ -33,7 +33,7 @@ final class CommandTests: XCTestCase {
 
         XCTAssertEqual(
             titles(controller),
-            ["Go to Today and Write", "Go to Journals", "Go to All Pages", "Search Keyboard Shortcuts", "Keyboard Shortcuts Settings", "Navigate Back", "New Page", "Focus Editor", "Find in Page", "Expand All Blocks", "Collapse All Blocks", "Add to Favorites", "Rename Page", "Delete Page…", "Toggle Sidebar", "Toggle Light / Dark", "Settings"]
+            ["Go to Today and Write", "Go to Journals", "Go to All Pages", "Search Keyboard Shortcuts", "Keyboard Shortcuts Settings", "Navigate Back", "New Page", "Focus Editor", "Find in Page", "Expand All Blocks", "Collapse All Blocks", "Add to Favorites", "Rename Page", "Delete Page…", "Import Logseq Graph…", "Export as Markdown…", "Toggle Sidebar", "Toggle Light / Dark", "Settings"]
         )
         XCTAssertEqual(controller.paletteItems.first(where: { $0.action == .toggleFavorite })?.shortcut, "⌘D")
 

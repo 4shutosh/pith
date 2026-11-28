@@ -33,6 +33,13 @@ pub fn shift_journal_date(date: Option<&str>, delta_days: i32) -> Result<String>
     ))
 }
 
+pub fn format_journal_day(day: i32) -> String {
+    let year = day / 10_000;
+    let month = (day / 100) % 100;
+    let date = day % 100;
+    format!("{year:04}-{month:02}-{date:02}")
+}
+
 pub fn parse_iso_date(raw: &str) -> Result<(i32, String)> {
     let parts: Vec<&str> = raw.trim().split('-').collect();
     if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {

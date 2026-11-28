@@ -319,3 +319,59 @@ struct SettingsIcon: View {
     }
 }
 
+
+struct PageIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let left: CGFloat = 2.5
+            let right = size.width - 2.5
+            let top: CGFloat = 1.5
+            let bottom = size.height - 1.5
+            let fold: CGFloat = 3.5
+            var outline = Path()
+            outline.move(to: CGPoint(x: left, y: top))
+            outline.addLine(to: CGPoint(x: right - fold, y: top))
+            outline.addLine(to: CGPoint(x: right, y: top + fold))
+            outline.addLine(to: CGPoint(x: right, y: bottom))
+            outline.addLine(to: CGPoint(x: left, y: bottom))
+            outline.closeSubpath()
+            context.stroke(outline, with: .foreground, style: StrokeStyle(lineWidth: 1.2, lineJoin: .round))
+            var corner = Path()
+            corner.move(to: CGPoint(x: right - fold, y: top))
+            corner.addLine(to: CGPoint(x: right - fold, y: top + fold))
+            corner.addLine(to: CGPoint(x: right, y: top + fold))
+            context.stroke(corner, with: .foreground, style: StrokeStyle(lineWidth: 1.1, lineJoin: .round))
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
+struct CommandIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            var chevron = Path()
+            chevron.move(to: CGPoint(x: 2.5, y: 3.5))
+            chevron.addLine(to: CGPoint(x: 6.5, y: size.height / 2))
+            chevron.addLine(to: CGPoint(x: 2.5, y: size.height - 3.5))
+            var line = Path()
+            line.move(to: CGPoint(x: 8, y: size.height - 3.5))
+            line.addLine(to: CGPoint(x: size.width - 2, y: size.height - 3.5))
+            let style = StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round)
+            context.stroke(chevron, with: .foreground, style: style)
+            context.stroke(line, with: .foreground, style: style)
+        }
+        .frame(width: 14, height: 14)
+    }
+}
+
+struct MoreIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            for x in [3.0, 7.0, 11.0] {
+                let dot = CGRect(x: x - 1.1, y: size.height / 2 - 1.1, width: 2.2, height: 2.2)
+                context.fill(Path(ellipseIn: dot), with: .foreground)
+            }
+        }
+        .frame(width: 14, height: 14)
+    }
+}

@@ -9,6 +9,7 @@ pub mod journal;
 pub mod ops;
 pub mod order;
 pub mod parser;
+pub mod ranking;
 pub mod schema;
 pub mod snippet;
 pub mod store;
@@ -25,7 +26,8 @@ pub use id::Id;
 pub use ops::Op;
 pub use store::{LiveBlockState, LivePageState, LiveSnapshot, Store};
 pub use types::{
-    ApplyResult, Backlink, Block, BlockKind, BlockLocation, BlockProp, ChangeEntry, ChangeFeed,
-    Crumb, EditOutcome, FlatBlockRow, LinkPreview, OpRecord, Origin, Page, PageMatch, PageSummary,
-    PageWindow, PreviewLine, PropRecord, RenderedSpan, SearchHit, TxMeta, TxnRecord, UnlinkedRef,
+    ApplyResult, Backlink, Block, BlockContext, BlockKind, BlockLocation, BlockProp, ChangeEntry,
+    ChangeFeed, ContextLine, Crumb, EditOutcome, FlatBlockRow, JournalActivity, LinkPreview,
+    OpRecord, Origin, Page, PageMatch, PageSummary, PageWindow, PreviewLine, PropRecord,
+    RenderedSpan, SearchHit, TxMeta, TxnRecord, UnlinkedRef,
 };

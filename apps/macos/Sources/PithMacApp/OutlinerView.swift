@@ -254,6 +254,7 @@ struct OutlinerView: View {
                     .padding(.top, 40)
                     .padding(.leading, 40)
                     .onAppear { controller.loadOlderJournals() }
+                    .id(controller.journalStreamDays)
             }
         }
     }

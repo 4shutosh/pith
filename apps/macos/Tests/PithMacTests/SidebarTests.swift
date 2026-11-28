@@ -138,6 +138,17 @@ final class SidebarTests: XCTestCase {
             PageDirectory.filter(items, tab: .pages, query: "al", sort: .title).map(\.page.title),
             ["Alpha"]
         )
+        XCTAssertEqual(
+            PageDirectory.filter(items, tab: .journals, query: "nov 26", sort: .title, dateFormat: .medium).map(\.page.title),
+            ["2026-11-26"]
+        )
+        XCTAssertEqual(
+            PageDirectory.filter(items, tab: .journals, query: "11-26", sort: .title, dateFormat: .medium).map(\.page.title),
+            ["2026-11-26"]
+        )
+        XCTAssertEqual(PageDirectory.filter(items, tab: .journals, query: "nov 26", sort: .title).map(\.page.title), [])
+        XCTAssertEqual(PageDirectory.displayTitle(items[3].page, format: .weekday), "Thu, Nov 26, 2026")
+        XCTAssertEqual(PageDirectory.displayTitle(items[0].page, format: .weekday), items[0].page.title)
         XCTAssertTrue(PageDirectory.offersCreate(query: "Gamma", in: items))
         XCTAssertFalse(PageDirectory.offersCreate(query: "alpha", in: items))
     }

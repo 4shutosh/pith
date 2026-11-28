@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 pith-core = { path = "../core" }
+pith-md = { path = "../md" }

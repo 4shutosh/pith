@@ -85,6 +85,13 @@ pub struct Page {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalActivity {
+    pub journal_day: i32,
+    pub page_id: Id,
+    pub block_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageSummary {
     pub page: Page,
     pub block_count: u64,
@@ -139,15 +146,19 @@ pub enum SearchHit {
         page_id: Id,
         title: String,
         highlighted_title: Vec<Segment>,
+        journal_day: Option<i32>,
+        backlink_count: u32,
+        score: u32,
     },
     Block {
         block_id: Id,
         page_id: Id,
         page_title: String,
+        page_journal_day: Option<i32>,
         breadcrumb: Vec<String>,
         snippet: Vec<Segment>,
         cursor: u32,
-        rank: f64,
+        score: u32,
     },
 }
 
@@ -298,6 +309,23 @@ pub struct BlockLocation {
 pub struct PreviewLine {
     pub depth: u32,
     pub spans: Vec<RenderedSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextLine {
+    pub depth: u32,
+    pub spans: Vec<RenderedSpan>,
+    pub is_target: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockContext {
+    pub page_id: Id,
+    pub page_title: String,
+    pub journal_day: Option<i32>,
+    pub crumbs: Vec<String>,
+    pub lines: Vec<ContextLine>,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -41,6 +41,7 @@ fn line(parts: &[(&str, bool)], cursor: usize) -> LineMatch {
     LineMatch {
         segments: segs(parts),
         cursor,
+        line: parts.iter().map(|(text, _)| *text).collect(),
     }
 }
 
@@ -159,7 +160,7 @@ fn block_hits_carry_the_matching_line_and_a_breadcrumb() -> Result<()> {
 }
 
 #[test]
-fn a_block_with_several_matching_lines_yields_one_hit_per_line() -> Result<()> {
+fn a_block_with_several_matching_lines_yields_one_ranked_hit_per_line() -> Result<()> {
     let mut store = Store::open_in_memory()?;
     let page = Id::new();
     let block = Id::new();
@@ -200,11 +201,57 @@ fn a_block_with_several_matching_lines_yields_one_hit_per_line() -> Result<()> {
     assert_eq!(
         lines,
         vec![
+            (block, "Cargo.toml lists deps".to_string(), 45),
             (block, "Hello, Cargo!".to_string(), 7),
             (block, "$ cargo --version".to_string(), 29),
-            (block, "Cargo.toml lists deps".to_string(), 45),
         ]
     );
     assert_eq!(store.search("cargo", 2)?.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn snippets_drop_link_brackets_but_keep_highlights_and_the_cursor() -> Result<()> {
+    let mut store = Store::open_in_memory()?;
+    let page = Id::new();
+    store.apply_ops(
+        &[
+            Op::CreatePage {
+                id: page,
+                title: "Notes".to_string(),
+                journal_day: None,
+                document_mode: false,
+            },
+            Op::InsertBlock {
+                id: Id::new(),
+                page_id: page,
+                parent_id: None,
+                order_key: order::between(None, None)?,
+                content: "Reading [[Atomic Habits]] tonight".to_string(),
+            },
+        ],
+        &TxMeta::new(Origin::User, "me", "seed"),
+    )?;
+    let hits = store.search("atomic", 5)?;
+    assert!(matches!(&hits[0], SearchHit::Page { title, .. } if title == "Atomic Habits"));
+    let Some(SearchHit::Block {
+        snippet,
+        cursor,
+        page_journal_day,
+        ..
+    }) = hits.get(1)
+    else {
+        panic!("expected a block hit, got {hits:?}");
+    };
+    assert_eq!(
+        snippet,
+        &segs(&[
+            ("Reading ", false),
+            ("Atomic", true),
+            (" Habits tonight", false)
+        ])
+    );
+    assert_eq!(*cursor, 10);
+    assert_eq!(*page_journal_day, None);
     Ok(())
 }

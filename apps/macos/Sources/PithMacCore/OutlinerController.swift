@@ -34,7 +34,7 @@ public enum SidebarDestination: Equatable {
 @MainActor
 public final class OutlinerController: ObservableObject {
     @Published public private(set) var library = PageLibrary()
-    @Published public var journals: [FfiPage] = []
+    @Published public private(set) var journals: [FfiPage] = []
     @Published public private(set) var editingTitleOf: DisplayedView?
     @Published public var pendingPageDelete: FfiPage?
     @Published public var pendingPageRestore: (id: String, title: String)?
@@ -72,6 +72,7 @@ public final class OutlinerController: ObservableObject {
     public let search = PaletteSearch()
     public let find = FindState()
     public let directory = PageDirectoryModel()
+    public let transfer = TransferState()
     public let actor: String
     public let todayTitle: String
     public var debounceNanoseconds: UInt64 = 300_000_000
@@ -335,7 +336,7 @@ public final class OutlinerController: ObservableObject {
     }
 
     private func reloadJournals() throws {
-        update(\.journals, to: try graph.listJournals(limit: UInt32(max(30, journalStreamDays + 2))))
+        update(\.journals, to: try graph.journalsBefore(date: todayTitle, limit: UInt32(journalStreamDays + 1)))
     }
 
     private func refreshLibrary(_ changed: [String]) throws {
@@ -461,6 +462,11 @@ public final class OutlinerController: ObservableObject {
     public func loadOlderJournals() {
         guard isJournalStream, hasOlderJournals else { return }
         journalStreamDays += Self.journalStreamStep
+        do {
+            try reloadJournals()
+        } catch {
+            report(error)
+        }
         loadView()
     }
 
@@ -472,10 +478,8 @@ public final class OutlinerController: ObservableObject {
             all = try graph.readPageWindow(pageId: todayId, offset: 0, limit: pageWindowLimit).rows
         }
         var sections = [JournalSection(pageId: selectedPageId, title: pageTitle ?? todayTitle, rowRange: 0..<all.count)]
-        let past = journals.filter { $0.id != selectedPageId && $0.title < todayTitle }
-        for journal in past.prefix(journalStreamDays) {
+        for journal in journals.prefix(journalStreamDays) {
             let window = try graph.readPageWindow(pageId: journal.id, offset: 0, limit: pageWindowLimit)
-            guard !window.rows.isEmpty else { continue }
             let start = all.count
             all.append(contentsOf: window.rows)
             sections.append(JournalSection(pageId: journal.id, title: journal.title, rowRange: start..<all.count))
@@ -483,7 +487,7 @@ public final class OutlinerController: ObservableObject {
         update(\.rows, to: all)
         update(\.totalVisible, to: UInt64(all.count))
         update(\.journalSections, to: sections)
-        update(\.hasOlderJournals, to: past.count > journalStreamDays)
+        update(\.hasOlderJournals, to: journals.count > journalStreamDays)
         update(\.breadcrumb, to: [])
     }
 
@@ -559,6 +563,24 @@ public final class OutlinerController: ObservableObject {
 
     public func openJournal(date: String) {
         openJournal(date: date, asStream: false)
+    }
+
+    public func journalHistory() -> JournalHistory {
+        do {
+            return JournalHistory(try graph.journalActivity())
+        } catch {
+            report(error)
+            return .empty
+        }
+    }
+
+    public func journalPreview(pageId: String) async -> FfiLinkPreview? {
+        do {
+            return try await worker.run { try $0.previewPage(pageId: pageId, maxLines: 14) }
+        } catch {
+            report(error)
+            return nil
+        }
     }
 
     private func openJournal(date: String, asStream: Bool) {
@@ -687,8 +709,19 @@ public final class OutlinerController: ObservableObject {
     }
 
     public func paletteItems(matching query: String) -> [PaletteItem] {
-        let words = query.lowercased().split(whereSeparator: \.isWhitespace)
-        return paletteItems.filter { $0.matches(words) }
+        paletteCommands(matching: query).map(\.item)
+    }
+
+    public func paletteCommands(matching query: String) -> [ScoredCommand] {
+        let wanted = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let items = paletteItems
+        guard !wanted.isEmpty else { return items.map { ScoredCommand(item: $0, score: 0) } }
+        return items.enumerated()
+            .compactMap { index, item in
+                commandScore(title: item.title, keywords: item.action.keywords, query: wanted).map { (index, ScoredCommand(item: item, score: $0)) }
+            }
+            .sorted { $0.1.score != $1.1.score ? $0.1.score > $1.1.score : $0.0 < $1.0 }
+            .map(\.1)
     }
 
     public func isAvailable(_ action: AppAction) -> Bool {
@@ -707,6 +740,8 @@ public final class OutlinerController: ObservableObject {
         case .openPalette, .goToToday, .openJournals, .openAllPages, .searchShortcuts, .openShortcuts, .openSettings,
              .toggleSidebar, .toggleTheme:
             return true
+        case .importLogseqGraph, .exportMarkdown:
+            return !transfer.isRunning
         case .focusEditor: return listScreen == nil
         case .newPage: return true
         case .cycleTask, .bold, .italic, .strikethrough, .highlight, .moveBlockUp, .moveBlockDown,
@@ -745,9 +780,77 @@ public final class OutlinerController: ObservableObject {
         case .cycleSelectedTasks: cycleSelectedTasks()
         case .selectAllBlocks: selectAllBlocks()
         case .openPalette, .searchShortcuts, .toggleSidebar, .toggleTheme, .cycleTask, .bold, .italic, .strikethrough,
-             .highlight, .moveBlockUp, .moveBlockDown, .toggleBlockCollapse, .copyBlockMarkdown:
+             .highlight, .moveBlockUp, .moveBlockDown, .toggleBlockCollapse, .copyBlockMarkdown,
+             .importLogseqGraph, .exportMarkdown:
             break
         }
+    }
+
+    public func startLogseqImport(sourcePath: String) {
+        guard !transfer.isRunning else { return }
+        let cancelFlag = transfer.begin(.importLogseq)
+        let actor = self.actor
+        let bridge = ProgressBridge(cancelFlag: cancelFlag) { [weak self] done, total in
+            Task { @MainActor [weak self] in
+                self?.transfer.updateProgress(kind: .importLogseq, done: done, total: total)
+            }
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let report = try await self.background.run { graph in
+                    try graph.importLogseqDb(
+                        sourcePath: sourcePath,
+                        dryRun: false,
+                        actor: actor,
+                        progress: bridge
+                    )
+                }
+                self.applyChanges()
+                self.transfer.finish(TransferState.summarizeImport(report))
+            } catch let error as FfiError {
+                self.applyChanges()
+                if case let .Core(code, _) = error, code == "cancelled" {
+                    self.transfer.markCancelled(.importLogseq)
+                } else {
+                    self.transfer.fail(.importLogseq, message: error.localizedDescription)
+                }
+            } catch {
+                self.applyChanges()
+                self.transfer.fail(.importLogseq, message: error.localizedDescription)
+            }
+        }
+    }
+
+    public func startMarkdownExport(outDir: String) {
+        guard !transfer.isRunning else { return }
+        let cancelFlag = transfer.begin(.exportMarkdown)
+        let bridge = ProgressBridge(cancelFlag: cancelFlag) { [weak self] done, total in
+            Task { @MainActor [weak self] in
+                self?.transfer.updateProgress(kind: .exportMarkdown, done: done, total: total)
+            }
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let report = try await self.background.run { graph in
+                    try graph.exportMarkdown(outDir: outDir, progress: bridge)
+                }
+                self.transfer.finish(TransferState.summarizeExport(report, outDir: outDir))
+            } catch let error as FfiError {
+                if case let .Core(code, _) = error, code == "cancelled" {
+                    self.transfer.markCancelled(.exportMarkdown)
+                } else {
+                    self.transfer.fail(.exportMarkdown, message: error.localizedDescription)
+                }
+            } catch {
+                self.transfer.fail(.exportMarkdown, message: error.localizedDescription)
+            }
+        }
+    }
+
+    public func cancelTransfer() {
+        transfer.requestCancel()
     }
 
     public func requestDelete(_ pageId: String) {
@@ -1522,20 +1625,53 @@ public final class OutlinerController: ObservableObject {
 
     public func openSearchHit(_ hit: FfiSearchHit) {
         switch hit {
-        case let .page(pageId, _, _):
+        case let .page(pageId, _, _, _, _, _):
             selectPage(pageId)
-        case let .block(blockId, pageId, _, _, _, cursor, _):
-            selectPage(pageId)
-            run {
-                let index = try graph.revealBlock(blockId: blockId, meta: meta("reveal block"))
-                if index >= windowOffset + pageWindowLimit {
-                    windowOffset = index - pageWindowLimit / 2
-                }
-                loadView()
-            }
-            guard let row = rows.first(where: { $0.id == blockId }) else { return }
-            focusBlock(blockId, cursorOffset: editOffset(fromRendered: Int(cursor), in: row))
+        case let .block(blockId, pageId, _, _, _, _, cursor, _):
+            openBlock(blockId, on: pageId, cursor: cursor)
         }
+    }
+
+    public func open(_ row: PaletteRow) {
+        switch row.kind {
+        case let .page(page):
+            selectPage(page.id)
+        case let .block(block):
+            openBlock(block.id, on: block.pageId, cursor: block.cursor)
+        case let .create(title):
+            openPageByTitle(title)
+        case .command, .more:
+            break
+        }
+    }
+
+    public func preview(for row: PaletteRow) async -> PalettePreview? {
+        do {
+            switch row.kind {
+            case let .page(page):
+                return try await worker.run { try $0.previewPage(pageId: page.id, maxLines: 14) }.map(PalettePreview.page)
+            case let .block(block):
+                return try await worker.run { try $0.searchContext(blockId: block.id, before: 3, after: 6) }.map(PalettePreview.block)
+            case .command, .more, .create:
+                return nil
+            }
+        } catch {
+            report(error)
+            return nil
+        }
+    }
+
+    private func openBlock(_ blockId: String, on pageId: String, cursor: UInt32) {
+        selectPage(pageId)
+        run {
+            let index = try graph.revealBlock(blockId: blockId, meta: meta("reveal block"))
+            if index >= windowOffset + pageWindowLimit {
+                windowOffset = index - pageWindowLimit / 2
+            }
+            loadView()
+        }
+        guard let row = rows.first(where: { $0.id == blockId }) else { return }
+        focusBlock(blockId, cursorOffset: editOffset(fromRendered: Int(cursor), in: row))
     }
 
     public func zoom(into blockId: String) {
@@ -1699,7 +1835,7 @@ public final class OutlinerController: ObservableObject {
         guard let hits = try? await worker.run({ try $0.search(query: query, limit: 20) }),
               !completionFlight.hasPending, job.ticket == completionTicket, focusedBlockId == job.editing else { return }
         let items: [CompletionItem] = hits.compactMap { hit in
-            guard case let .block(blockId, _, _, breadcrumb, snippet, _, _) = hit, blockId != job.editing else {
+            guard case let .block(blockId, _, _, _, breadcrumb, snippet, _, _) = hit, blockId != job.editing else {
                 return nil
             }
             return CompletionItem(

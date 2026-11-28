@@ -32,6 +32,10 @@ public enum PageDirectorySort: String, CaseIterable, Equatable {
 }
 
 public enum PageDirectory {
+    public static func displayTitle(_ page: FfiPage, format: JournalDateFormat) -> String {
+        SearchPresentation.displayTitle(page.title, isJournal: page.journalDay != nil, format: format)
+    }
+
     public static func count(in summaries: [FfiPageSummary], for tab: PageDirectoryTab) -> Int {
         summaries.reduce(0) { $0 + (tab.matches($1) ? 1 : 0) }
     }
@@ -40,13 +44,15 @@ public enum PageDirectory {
         _ summaries: [FfiPageSummary],
         tab: PageDirectoryTab,
         query: String,
-        sort: PageDirectorySort
+        sort: PageDirectorySort,
+        dateFormat: JournalDateFormat = .iso
     ) -> [FfiPageSummary] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let filtered = summaries.filter { summary in
             guard tab.matches(summary) else { return false }
             if needle.isEmpty { return true }
             return summary.page.title.lowercased().contains(needle)
+                || displayTitle(summary.page, format: dateFormat).lowercased().contains(needle)
         }
         return filtered.sorted { lhs, rhs in
             switch sort {

@@ -185,6 +185,7 @@ struct ContentView: View {
                             shortcuts: shortcuts,
                             search: controller.search,
                             isPresented: $showSearch,
+                            layout: PaletteLayout(container: proxy.size),
                             onDismiss: { dismissPalette(restoreFocus: true) },
                             onCommand: { action in
                                 focusBeforePalette = nil
@@ -194,13 +195,19 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.elevatedBorder, lineWidth: 1))
                         .shadow(color: Theme.shadow, radius: 28, y: 12)
-                        .padding(.top, 46)
+                        .padding(.top, PaletteLayout.top)
                         .transition(.scale(scale: 0.97).combined(with: .opacity))
                     }
                     .zIndex(10)
                 }
             }
             topBar(compact: compact, docked: docked)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                TransferBanner(transfer: controller.transfer) {
+                    controller.cancelTransfer()
+                }
+                .padding(16)
             }
             .animation(Motion.pop, value: showSearch)
             .onAppear { sidebarCompact = compact }
@@ -390,6 +397,12 @@ struct AppCommands: Commands {
                 .keyboardShortcut("z", modifiers: .command)
             Button("Redo") { controller.redo() }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
+        CommandGroup(replacing: .importExport) {
+            Button(AppAction.importLogseqGraph.title) { performer.perform(.importLogseqGraph) }
+                .dynamicShortcut(.importLogseqGraph, in: shortcuts)
+            Button(AppAction.exportMarkdown.title) { performer.perform(.exportMarkdown) }
+                .dynamicShortcut(.exportMarkdown, in: shortcuts)
         }
         CommandMenu("Page") {
             menuItems(for: .page)

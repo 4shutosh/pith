@@ -125,6 +125,8 @@ private final class AppKeyboardHarness {
         case .tab: return KeyStroke(keyCode: 48, characters: "\t", modifiers: modifiers, isEditingText: editing, isComposingIME: ime)
         case .backspace: return KeyStroke(keyCode: 51, characters: "\u{7F}", modifiers: modifiers, isEditingText: editing, isComposingIME: ime)
         case .forwardDelete: return KeyStroke(keyCode: 117, characters: nil, modifiers: modifiers, isEditingText: editing, isComposingIME: ime)
+        case .pageUp: return KeyStroke(keyCode: 116, characters: nil, modifiers: modifiers, isEditingText: editing, isComposingIME: ime)
+        case .pageDown: return KeyStroke(keyCode: 121, characters: nil, modifiers: modifiers, isEditingText: editing, isComposingIME: ime)
         case let .character(ch): return KeyStroke(keyCode: 0, characters: ch, modifiers: modifiers, isEditingText: editing, isComposingIME: ime)
         case let .other(code): return KeyStroke(keyCode: code, characters: nil, modifiers: modifiers, isEditingText: editing, isComposingIME: ime)
         }

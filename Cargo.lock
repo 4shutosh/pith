@@ -628,6 +628,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "pith-core",
+ "pith-md",
 ]
 
 [[package]]
@@ -637,6 +638,7 @@ dependencies = [
  "anyhow",
  "clap",
  "pith-core",
+ "pith-md",
  "serde",
  "serde_json",
 ]
@@ -660,8 +662,23 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "pith-core",
+ "pith-md",
  "thiserror",
  "uniffi",
+ "uuid",
+]
+
+[[package]]
+name = "pith-md"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "pith-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
  "uuid",
 ]
 

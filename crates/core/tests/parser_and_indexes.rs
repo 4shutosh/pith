@@ -406,6 +406,9 @@ fn search_excludes_uuids_handles_short_queries_and_survives_vacuum() -> Result<(
                 page_id,
                 title: "Engineering".to_string(),
                 highlighted_title: segs(&[("En", true), ("gineering", false)]),
+                journal_day: None,
+                backlink_count: 0,
+                score: 101,
             }]
         );
         assert!(store.search("zz", 10)?.is_empty());
@@ -483,11 +486,17 @@ fn short_query_returns_pages_including_empty_ones_without_block_crowding() -> Re
                 page_id: design,
                 title: "Design".to_string(),
                 highlighted_title: segs(&[("De", true), ("sign", false)]),
+                journal_day: None,
+                backlink_count: 0,
+                score: 101,
             },
             SearchHit::Page {
                 page_id: devlog,
                 title: "Devlog".to_string(),
                 highlighted_title: segs(&[("De", true), ("vlog", false)]),
+                journal_day: None,
+                backlink_count: 0,
+                score: 101,
             },
         ]
     );
@@ -550,6 +559,9 @@ fn title_matches_are_page_hits_at_every_query_length() -> Result<()> {
             page_id: design,
             title: "Design".to_string(),
             highlighted_title: segs(&[("Des", true), ("ign", false)]),
+            journal_day: None,
+            backlink_count: 0,
+            score: 101,
         }]
     );
 
@@ -561,6 +573,9 @@ fn title_matches_are_page_hits_at_every_query_length() -> Result<()> {
             page_id: devlog,
             title: "Devlog".to_string(),
             highlighted_title: segs(&[("Devlog", true)]),
+            journal_day: None,
+            backlink_count: 0,
+            score: 121,
         }
     );
     assert!(matches!(

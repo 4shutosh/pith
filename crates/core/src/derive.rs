@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use crate::error::{Error, Result};
 use crate::id::Id;
 use crate::parser::{self, RefTarget, Span};
+use crate::ranking;
 use crate::snippet;
 use crate::types::{Backlink, BlockProp, PropRecord, RenderedSpan, SearchHit, UnlinkedRef};
 
@@ -489,118 +490,245 @@ pub fn rebuild_all(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn search_blocks(conn: &Connection, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+const PAGE_CANDIDATES: usize = 50;
+const BLOCK_CANDIDATES: usize = 400;
+
+struct PageCandidate {
+    page_id: Id,
+    title: String,
+    journal_day: Option<i32>,
+    updated_at: i64,
+}
+
+enum Pending {
+    Page {
+        page: PageCandidate,
+        backlinks: u32,
+        score: u32,
+    },
+    Block {
+        block_id: Id,
+        page_id: Id,
+        page_title: String,
+        page_journal_day: Option<i32>,
+        segments: Vec<crate::snippet::Segment>,
+        cursor: u32,
+        score: u32,
+    },
+}
+
+pub fn search_blocks(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+    now: i64,
+) -> Result<Vec<SearchHit>> {
     let trimmed = query.trim();
     if trimmed.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
 
-    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
-    let mut hits = Vec::new();
+    let mut ranked: Vec<(ranking::RankKey, Pending)> = Vec::new();
+    for page in page_candidates(conn, trimmed)? {
+        let Some(quality) = ranking::match_quality(&page.title, trimmed) else {
+            continue;
+        };
+        let backlinks = page_backlink_count(conn, page.page_id)?;
+        let score = ranking::page_score(quality, backlinks, page.updated_at, now);
+        ranked.push((
+            ranking::RankKey {
+                score,
+                is_page: true,
+                text_len: page.title.chars().count(),
+                text_lower: page.title.to_lowercase(),
+                id: page.page_id,
+                cursor: 0,
+            },
+            Pending::Page {
+                page,
+                backlinks,
+                score,
+            },
+        ));
+    }
 
+    let mut title_cache: HashMap<Id, Option<PageLookup>> = HashMap::new();
+    if trimmed.chars().count() >= 3
+        && let Some(match_expr) = build_trigram_query(trimmed)
+    {
+        let mut block_stmt = conn.prepare(
+            "SELECT b.id, b.page_id, p.title, b.content, b.updated_at, p.journal_day
+             FROM blocks_fts
+             JOIN blocks b ON b.seq = blocks_fts.rowid
+             JOIN pages p ON p.id = b.page_id
+             WHERE blocks_fts MATCH ?1 AND b.deleted_at IS NULL AND p.deleted_at IS NULL
+             ORDER BY bm25(blocks_fts), b.id
+             LIMIT ?2",
+        )?;
+        let block_rows =
+            block_stmt.query_map(params![match_expr, BLOCK_CANDIDATES as i64], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i32>>(5)?,
+                ))
+            })?;
+        for row in block_rows {
+            let (bid_b, pid_b, page_title, content, updated_at, page_journal_day) = row?;
+            let block_id = Id::from_slice(&bid_b)
+                .ok_or_else(|| Error::InvariantViolation("invalid block id bytes".to_string()))?;
+            let page_id = Id::from_slice(&pid_b)
+                .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
+            let rendered_content = render_content_with_cache(conn, &mut title_cache, &content)?;
+            let lines = snippet::matching_lines(&rendered_content, trimmed);
+            let line_qualities: Vec<Option<ranking::MatchQuality>> = lines
+                .iter()
+                .map(|line| ranking::match_quality(&line.line, trimmed))
+                .collect();
+            let block_quality = if line_qualities.iter().all(Option::is_none) {
+                ranking::match_quality(&rendered_content, trimmed)
+            } else {
+                None
+            };
+            for (index, line) in lines.into_iter().enumerate() {
+                let quality = match (line_qualities[index], block_quality) {
+                    (Some(quality), _) => quality,
+                    (None, Some(quality)) if index == 0 => quality,
+                    _ => continue,
+                };
+                let score = ranking::block_score(quality, updated_at, now);
+                let cursor = line.cursor as u32;
+                ranked.push((
+                    ranking::RankKey {
+                        score,
+                        is_page: false,
+                        text_len: line.line.chars().count(),
+                        text_lower: line.line.to_lowercase(),
+                        id: block_id,
+                        cursor,
+                    },
+                    Pending::Block {
+                        block_id,
+                        page_id,
+                        page_title: page_title.clone(),
+                        page_journal_day,
+                        segments: snippet::without_link_brackets(line.segments),
+                        cursor,
+                        score,
+                    },
+                ));
+            }
+        }
+    }
+
+    ranked.sort_by(|a, b| a.0.order(&b.0));
+    ranked.truncate(limit);
+
+    let mut hits = Vec::with_capacity(ranked.len());
+    for (_, pending) in ranked {
+        hits.push(match pending {
+            Pending::Page {
+                page,
+                backlinks,
+                score,
+            } => SearchHit::Page {
+                page_id: page.page_id,
+                highlighted_title: snippet::highlight(&page.title, trimmed),
+                title: page.title,
+                journal_day: page.journal_day,
+                backlink_count: backlinks,
+                score,
+            },
+            Pending::Block {
+                block_id,
+                page_id,
+                page_title,
+                page_journal_day,
+                segments,
+                cursor,
+                score,
+            } => {
+                let mut breadcrumb = vec![page_title.clone()];
+                breadcrumb.extend(ancestor_crumbs(conn, &mut title_cache, block_id)?);
+                SearchHit::Block {
+                    block_id,
+                    page_id,
+                    page_title,
+                    page_journal_day,
+                    breadcrumb,
+                    snippet: segments,
+                    cursor,
+                    score,
+                }
+            }
+        });
+    }
+    Ok(hits)
+}
+
+fn page_candidates(conn: &Connection, trimmed: &str) -> Result<Vec<PageCandidate>> {
+    let mut out = Vec::new();
+    let mut push_rows = |rows: rusqlite::MappedRows<'_, _>| -> Result<()> {
+        for row in rows {
+            let (pid_b, title, journal_day, updated_at): (Vec<u8>, String, Option<i32>, i64) = row?;
+            let page_id = Id::from_slice(&pid_b)
+                .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
+            out.push(PageCandidate {
+                page_id,
+                title,
+                journal_day,
+                updated_at,
+            });
+        }
+        Ok(())
+    };
+    let read = |r: &rusqlite::Row<'_>| {
+        Ok((
+            r.get::<_, Vec<u8>>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<i32>>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    };
     if trimmed.chars().count() < 3 {
         let lower = trimmed.to_lowercase();
         let upper = format!("{lower}\u{10FFFF}");
         let mut stmt = conn.prepare(
-            "SELECT id, title
+            "SELECT id, title, journal_day, updated_at
              FROM pages
-             WHERE deleted_at IS NULL
-               AND title_lower >= ?1
-               AND title_lower <= ?2
+             WHERE deleted_at IS NULL AND title_lower >= ?1 AND title_lower <= ?2
              ORDER BY title_lower, id
              LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![lower, upper, limit as i64], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (pid_b, title) = row?;
-            let page_id = Id::from_slice(&pid_b)
-                .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
-            hits.push(SearchHit::Page {
-                page_id,
-                highlighted_title: snippet::highlight(&title, trimmed),
-                title,
-            });
-        }
-        return Ok(hits);
+        push_rows(stmt.query_map(params![lower, upper, PAGE_CANDIDATES as i64], read)?)?;
+    } else if let Some(match_expr) = build_trigram_query(trimmed) {
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.title, p.journal_day, p.updated_at
+             FROM pages_fts
+             JOIN pages p ON p.seq = pages_fts.rowid
+             WHERE pages_fts MATCH ?1 AND p.deleted_at IS NULL
+             ORDER BY bm25(pages_fts), p.title_lower, p.id
+             LIMIT ?2",
+        )?;
+        push_rows(stmt.query_map(params![match_expr, PAGE_CANDIDATES as i64], read)?)?;
     }
+    Ok(out)
+}
 
-    let Some(match_expr) = build_trigram_query(trimmed) else {
-        return Ok(Vec::new());
-    };
-
-    let mut page_stmt = conn.prepare(
-        "SELECT p.id, p.title
-         FROM pages_fts
-         JOIN pages p ON p.seq = pages_fts.rowid
-         WHERE pages_fts MATCH ?1 AND p.deleted_at IS NULL
-         ORDER BY bm25(pages_fts), p.title_lower, p.id
-         LIMIT ?2",
-    )?;
-    let page_rows = page_stmt.query_map(params![match_expr, limit as i64], |r| {
-        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?))
-    })?;
-    for row in page_rows {
-        let (pid_b, title) = row?;
-        let page_id = Id::from_slice(&pid_b)
-            .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
-        hits.push(SearchHit::Page {
-            page_id,
-            highlighted_title: snippet::highlight(&title, trimmed),
-            title,
-        });
-    }
-
-    let remaining = limit - hits.len();
-    if remaining == 0 {
-        return Ok(hits);
-    }
-
-    let mut block_stmt = conn.prepare(
-        "SELECT b.id, b.page_id, p.title, b.content, bm25(blocks_fts)
-         FROM blocks_fts
-         JOIN blocks b ON b.seq = blocks_fts.rowid
-         JOIN pages p ON p.id = b.page_id
-         WHERE blocks_fts MATCH ?1 AND b.deleted_at IS NULL AND p.deleted_at IS NULL
-         ORDER BY bm25(blocks_fts), b.id
-         LIMIT ?2",
-    )?;
-    let block_rows = block_stmt.query_map(params![match_expr, remaining as i64], |r| {
-        Ok((
-            r.get::<_, Vec<u8>>(0)?,
-            r.get::<_, Vec<u8>>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, f64>(4)?,
-        ))
-    })?;
-    for row in block_rows {
-        let (bid_b, pid_b, page_title, content, rank) = row?;
-        let block_id = Id::from_slice(&bid_b)
-            .ok_or_else(|| Error::InvariantViolation("invalid block id bytes".to_string()))?;
-        let page_id = Id::from_slice(&pid_b)
-            .ok_or_else(|| Error::InvariantViolation("invalid page id bytes".to_string()))?;
-        let rendered_content = render_content_with_cache(conn, &mut title_cache, &content)?;
-        let mut breadcrumb = vec![page_title.clone()];
-        breadcrumb.extend(ancestor_crumbs(conn, &mut title_cache, block_id)?);
-        for line in snippet::matching_lines(&rendered_content, trimmed) {
-            if hits.len() >= limit {
-                return Ok(hits);
-            }
-            hits.push(SearchHit::Block {
-                block_id,
-                page_id,
-                page_title: page_title.clone(),
-                breadcrumb: breadcrumb.clone(),
-                snippet: line.segments,
-                cursor: line.cursor as u32,
-                rank,
-            });
-        }
-    }
-
-    Ok(hits)
+fn page_backlink_count(conn: &Connection, page_id: Id) -> Result<u32> {
+    let count: i64 = conn
+        .prepare_cached(
+            "SELECT COUNT(DISTINCT r.src_block)
+             FROM refs r
+             JOIN blocks b ON b.id = r.src_block
+             JOIN pages p ON p.id = b.page_id
+             WHERE r.target = ?1 AND b.deleted_at IS NULL AND p.deleted_at IS NULL",
+        )?
+        .query_row(params![page_id.as_bytes().as_slice()], |r| r.get(0))?;
+    Ok(count.max(0) as u32)
 }
 
 fn ancestor_crumbs(

@@ -13,14 +13,6 @@ final class SearchPresentationTests: XCTestCase {
         XCTAssertEqual(SearchPresentation.breadcrumb(["DSA Notes", "Questions", "Memory", "NEW: colouring"]), "DSA Notes / … / NEW: colouring")
     }
 
-    func testCreatePageIsOfferedUnlessAPageHasExactlyThatTitle() {
-        let exact: [FfiSearchHit] = [.page(pageId: "p", title: "Manage", highlightedTitle: [])]
-        let partial: [FfiSearchHit] = [.page(pageId: "p", title: "Management", highlightedTitle: [])]
-        XCTAssertFalse(SearchPresentation.offersCreatePage(query: "manage", hits: exact))
-        XCTAssertTrue(SearchPresentation.offersCreatePage(query: "manage", hits: partial))
-        XCTAssertFalse(SearchPresentation.offersCreatePage(query: "  ", hits: []))
-    }
-
     func testSearchShowsTheLineThatMatchedWithTheQueryHighlighted() async throws {
         let graph = try PithGraph.openInMemory()
         let controller = try OutlinerController(graph: graph)
@@ -31,7 +23,7 @@ final class SearchPresentationTests: XCTestCase {
 
         await controller.runSearch("cargo").value
 
-        guard case let .block(_, _, _, breadcrumb, snippet, _, _)? = controller.search.hits.first else {
+        guard case let .block(_, _, _, _, breadcrumb, snippet, _, _)? = controller.search.hits.first else {
             return XCTFail("expected a block hit, got \(controller.search.hits)")
         }
         XCTAssertEqual(breadcrumb, [try XCTUnwrap(controller.pageTitle)])

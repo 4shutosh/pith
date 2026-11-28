@@ -111,8 +111,8 @@ final class WorkerTests: XCTestCase {
         await last?.value
 
         XCTAssertEqual(controller.search.query, "alpha")
-        XCTAssertEqual(controller.search.pageHits.count, 1)
-        guard case let .page(_, title, _)? = controller.search.pageHits.first else {
+        XCTAssertEqual(controller.search.hits.count, 1)
+        guard case let .page(_, title, _, _, _, _)? = controller.search.hits.first else {
             return XCTFail("expected the Alpha page")
         }
         XCTAssertEqual(title, "Alpha")

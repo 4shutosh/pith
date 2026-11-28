@@ -6,18 +6,37 @@ import SwiftUI
 struct PageListView: View {
     @ObservedObject var controller: OutlinerController
     @ObservedObject var directory: PageDirectoryModel
+    @ObservedObject private var settings = AppSettings.shared
     @Binding var showSearch: Bool
     let contentLeading: CGFloat
     let contentWidth: CGFloat
 
-    @State private var tab: PageDirectoryTab = .pages
     @State private var sort: PageDirectorySort = .updated
     @State private var query: String = ""
     @State private var highlightedIndex: Int?
     @State private var renamingPageId: String?
     @State private var renameDraft: String = ""
+    @State private var journalHistory: JournalHistory = .empty
     @FocusState private var filterFocused: Bool
     @Namespace private var tabNamespace
+
+    init(
+        controller: OutlinerController,
+        directory: PageDirectoryModel,
+        showSearch: Binding<Bool>,
+        contentLeading: CGFloat,
+        contentWidth: CGFloat
+    ) {
+        self.controller = controller
+        self.directory = directory
+        self._showSearch = showSearch
+        self.contentLeading = contentLeading
+        self.contentWidth = contentWidth
+    }
+
+    private var tab: PageDirectoryTab {
+        directory.selectedTab
+    }
 
     private let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -30,12 +49,27 @@ struct PageListView: View {
     @State private var counts: [PageDirectoryTab: Int] = [:]
 
     private func refreshVisible(_ all: [FfiPageSummary]) {
-        summaries = PageDirectory.filter(all, tab: tab, query: query, sort: sort)
+        summaries = PageDirectory.filter(all, tab: tab, query: query, sort: sort, dateFormat: settings.dateFormat)
         offersCreate = PageDirectory.offersCreate(query: query, in: all)
     }
 
     private func refreshCounts(_ all: [FfiPageSummary]) {
         counts = Dictionary(uniqueKeysWithValues: PageDirectoryTab.allCases.map { ($0, PageDirectory.count(in: all, for: $0)) })
+    }
+
+    private func refreshCalendarDays() {
+        journalHistory = controller.journalHistory()
+    }
+
+    private var today: JournalDay {
+        JournalDay(iso: controller.todayTitle) ?? JournalMonth(year: 2026, month: 1).first
+    }
+
+    private var calendarState: Binding<JournalCalendarState> {
+        Binding(
+            get: { directory.journalCalendar ?? JournalCalendarState(selected: today) },
+            set: { directory.journalCalendar = $0 }
+        )
     }
 
     private var trimmedQuery: String {
@@ -44,6 +78,55 @@ struct PageListView: View {
 
 
     var body: some View {
+        Group {
+            if tab == .journals {
+                journalsBody
+            } else {
+                listBody
+            }
+        }
+        .onAppear {
+            refreshCalendarDays()
+        }
+        .onChange(of: query) { _ in
+            highlightedIndex = nil
+            refreshVisible(PageDirectory.merge(controller.library, counts: directory.summaries))
+        }
+        .onChange(of: directory.selectedTab) { next in
+            highlightedIndex = nil
+            if next == .journals {
+                filterFocused = false
+                refreshCalendarDays()
+            }
+            refreshVisible(PageDirectory.merge(controller.library, counts: directory.summaries))
+        }
+        .onChange(of: settings.dateFormat) { _ in
+            refreshVisible(PageDirectory.merge(controller.library, counts: directory.summaries))
+        }
+        .onChange(of: sort) { _ in
+            highlightedIndex = nil
+            refreshVisible(PageDirectory.merge(controller.library, counts: directory.summaries))
+        }
+        .onReceive(directory.$summaries) { counts in
+            let all = PageDirectory.merge(controller.library, counts: counts)
+            refreshCounts(all)
+            refreshVisible(all)
+            if tab == .journals {
+                refreshCalendarDays()
+            }
+        }
+        .onReceive(controller.$library) { library in
+            let all = PageDirectory.merge(library, counts: directory.summaries)
+            refreshCounts(all)
+            refreshVisible(all)
+            if tab == .journals {
+                refreshCalendarDays()
+            }
+        }
+        .keyScope(.screen, whileEditingText: true) { handleKey($0) }
+    }
+
+    private var listBody: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 HStack(spacing: 0) {
@@ -119,29 +202,30 @@ struct PageListView: View {
                 }
             }
         }
-        .onChange(of: query) { _ in
-            highlightedIndex = nil
-            refreshVisible(PageDirectory.merge(controller.library, counts: directory.summaries))
+    }
+
+    private var journalsBody: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                toolbar
+                    .padding(.top, 16)
+                    .padding(.bottom, 16)
+                JournalCalendarView(
+                    controller: controller,
+                    history: journalHistory,
+                    today: today,
+                    state: calendarState,
+                    width: contentWidth
+                )
+            }
+            .frame(width: contentWidth, alignment: .leading)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .padding(.leading, contentLeading)
+            .padding(.top, EditorLayout.contentTop)
+            .padding(.bottom, 24)
+            Spacer(minLength: 0)
         }
-        .onChange(of: tab) { _ in
-            highlightedIndex = nil
-            refreshVisible(PageDirectory.merge(controller.library, counts: directory.summaries))
-        }
-        .onChange(of: sort) { _ in
-            highlightedIndex = nil
-            refreshVisible(PageDirectory.merge(controller.library, counts: directory.summaries))
-        }
-        .onReceive(directory.$summaries) { counts in
-            let all = PageDirectory.merge(controller.library, counts: counts)
-            refreshCounts(all)
-            refreshVisible(all)
-        }
-        .onReceive(controller.$library) { library in
-            let all = PageDirectory.merge(library, counts: directory.summaries)
-            refreshCounts(all)
-            refreshVisible(all)
-        }
-        .keyScope(.screen, whileEditingText: true) { handleKey($0) }
     }
 
     private var layout: PageDirectoryLayout {
@@ -150,7 +234,13 @@ struct PageListView: View {
 
     @ViewBuilder
     private var header: some View {
-        if layout.stacksHeader {
+        if tab == .journals {
+            HStack(alignment: .center, spacing: 12) {
+                pageTitle
+                Spacer()
+                newButton
+            }
+        } else if layout.stacksHeader {
             VStack(alignment: .leading, spacing: 14) {
                 pageTitle
                 HStack(spacing: 8) {
@@ -217,12 +307,14 @@ struct PageListView: View {
                         selectionId: "pageFilterTab"
                     ) {
                         withAnimation(Motion.morph) {
-                            tab = option
+                            directory.selectedTab = option
                         }
                     }
                 }
             }
-            SortPicker(sort: $sort, compact: layout.compactSort)
+            if tab != .journals {
+                SortPicker(sort: $sort, compact: layout.compactSort)
+            }
         }
     }
 
@@ -284,6 +376,18 @@ struct PageListView: View {
     }
 
     private func handleKey(_ stroke: KeyStroke) -> Bool {
+        if tab == .journals {
+            guard !stroke.isEditingText else { return false }
+            var state = calendarState.wrappedValue
+            guard let action = state.handleKey(stroke, today: today, history: journalHistory) else {
+                return false
+            }
+            calendarState.wrappedValue = state
+            if case let .open(day) = action {
+                controller.openJournal(date: day.iso)
+            }
+            return true
+        }
         guard renamingPageId == nil else { return false }
         let list = summaries
 
@@ -343,6 +447,7 @@ private struct PageDirectoryRow: View {
     let onCancelRename: () -> Void
     let onDelete: (() -> Void)?
     let onHover: (Bool) -> Void
+    @ObservedObject private var settings = AppSettings.shared
     @FocusState private var renameFocused: Bool
 
     private var page: FfiPage { summary.page }
@@ -369,7 +474,7 @@ private struct PageDirectoryRow: View {
                                 .foregroundColor(Theme.textTertiary)
                         }
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(page.title)
+                            Text(PageDirectory.displayTitle(page, format: settings.dateFormat))
                                 .font(Typography.ui(TypeScale.listRow, isHighlighted ? .medium : .regular))
                                 .foregroundColor(
                                     summary.blockCount == 0
